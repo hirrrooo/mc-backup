@@ -374,27 +374,24 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 			prev = &lastBackup{}
 		}
 
-		dataDir := s.Server.DataDir
-		if dataDir == "" {
-			dataDir = filepath.Join(s.Watch.Path, s.Name, "mc-data")
-		}
-		totalSize, _ := dirSize(dataDir)
-
 		ts := time.Now().Format("20060102-1504")
 		d.jobTracker.Add(key, &JobInfo{
 			ServerName: s.Name,
 			Snapshot:   ts,
 			State:      "Saving",
-			TotalSize:  totalSize,
 		})
 
-		be.OnProgress = func(bytesMoved int64) {
+		var maxTotal int64
+		be.OnProgress = func(bytesMoved, totalSize int64) {
+			if totalSize > maxTotal {
+				maxTotal = totalSize
+			}
 			d.jobTracker.Add(key, &JobInfo{
 				ServerName: s.Name,
 				Snapshot:   ts,
 				State:      "Saving",
 				BytesMoved: bytesMoved,
-				TotalSize:  totalSize,
+				TotalSize:  maxTotal,
 			})
 		}
 

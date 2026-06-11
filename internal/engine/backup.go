@@ -58,11 +58,11 @@ func nasRsyncArgs(dataDir, prevBackup, destDir string, nas NASConfig, maxMbps fl
 	return args
 }
 
-func runRsync(ctx context.Context, args []string, onProgress func(bytesMoved int64)) error {
+func runRsync(ctx context.Context, args []string, onProgress func(bytesMoved, totalSize int64)) error {
 	if onProgress != nil {
 		newArgs := make([]string, 0, len(args)+1)
-		newArgs = append(newArgs, args[0], args[1], "--info=progress2")
-		newArgs = append(newArgs, args[2:]...)
+		newArgs = append(newArgs, args[0], "--info=progress2")
+		newArgs = append(newArgs, args[1:]...)
 		args = newArgs
 	}
 
@@ -139,7 +139,7 @@ const rconRetryInterval = 10 * time.Second
 
 type BackupEngine struct {
 	cfg        Config
-	OnProgress func(bytesMoved int64)
+	OnProgress func(bytesMoved, totalSize int64)
 }
 
 func NewBackupEngine(cfg Config) *BackupEngine {
@@ -232,21 +232,26 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 	return destPath, useSSH, nil
 }
 
-func parseRsyncProgress(line string) (int64, bool) {
+func parseRsyncProgress(line string) (bytesMoved int64, totalSize int64, ok bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return 0, false
+		return 0, 0, false
 	}
 	fields := strings.Fields(line)
-	if len(fields) == 0 {
-		return 0, false
+	if len(fields) < 2 {
+		return 0, 0, false
 	}
 	cleaned := strings.ReplaceAll(fields[0], ",", "")
-	n, err := strconv.ParseInt(cleaned, 10, 64)
+	bytes, err := strconv.ParseInt(cleaned, 10, 64)
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
-	return n, true
+	pctStr := strings.TrimSuffix(fields[1], "%")
+	pct, err := strconv.ParseInt(pctStr, 10, 64)
+	if err != nil || pct == 0 {
+		return bytes, 0, true
+	}
+	return bytes, bytes * 100 / pct, true
 }
 
 func scanRsyncLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
@@ -265,12 +270,12 @@ func scanRsyncLines(data []byte, atEOF bool) (advance int, token []byte, err err
 	return 0, nil, nil
 }
 
-func streamRsyncProgress(r io.Reader, onProgress func(bytesMoved int64)) {
+func streamRsyncProgress(r io.Reader, onProgress func(bytesMoved, totalSize int64)) {
 	scanner := bufio.NewScanner(r)
 	scanner.Split(scanRsyncLines)
 	for scanner.Scan() {
-		if bytes, ok := parseRsyncProgress(scanner.Text()); ok {
-			onProgress(bytes)
+		if bytes, total, ok := parseRsyncProgress(scanner.Text()); ok {
+			onProgress(bytes, total)
 		}
 	}
 	if err := scanner.Err(); err != nil {
