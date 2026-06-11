@@ -2,12 +2,15 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/fsnotify/fsnotify"
 )
 
 type Duration struct{ time.Duration }
@@ -212,4 +215,55 @@ func setServerField(s *ServerConfig, key, val string) {
 	case "data_dir":
 		s.DataDir = val
 	}
+}
+
+type atomicConfig struct {
+	ptr atomic.Pointer[Config]
+}
+
+func (ac *atomicConfig) Load() *Config {
+	return ac.ptr.Load()
+}
+
+func (ac *atomicConfig) Store(cfg *Config) {
+	ac.ptr.Store(cfg)
+}
+
+func watchConfig(path string, ac *atomicConfig) error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("watcher: %w", err)
+	}
+	if err := watcher.Add(path); err != nil {
+		watcher.Close()
+		return fmt.Errorf("watch %s: %w", path, err)
+	}
+
+	go func() {
+		defer watcher.Close()
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Op&fsnotify.Write != 0 || event.Op&fsnotify.Create != 0 {
+					slog.Info("config file changed, reloading", "path", path)
+					cfg, err := LoadConfig(path)
+					if err != nil {
+						slog.Error("config reload failed", "error", err)
+						continue
+					}
+					ac.Store(cfg)
+					slog.Info("config reloaded successfully")
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				slog.Error("config watcher error", "error", err)
+			}
+		}
+	}()
+	return nil
 }
