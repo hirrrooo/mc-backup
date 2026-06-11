@@ -103,35 +103,6 @@ func (d *Daemon) Cancel() {
 	}
 }
 
-func (d *Daemon) restoreLastBackups(servers []struct {
-	Watch  WatchConfig
-	Name   string
-	Server ServerConfig
-}) {
-	for _, s := range servers {
-		if s.Server.SSHOnly {
-			continue
-		}
-		backupDir := s.Watch.backupDir(s.Name)
-		entries, err := os.ReadDir(backupDir)
-		if err != nil {
-			continue
-		}
-		var latest string
-		for _, e := range entries {
-			if e.IsDir() && isBackupDir(e.Name()) && e.Name() > latest {
-				latest = e.Name()
-			}
-		}
-		if latest != "" {
-			key := s.Watch.Namespace + "/" + s.Name
-			d.lastBackups[key] = &lastBackup{
-				local: filepath.Join(backupDir, latest),
-			}
-		}
-	}
-}
-
 func (d *Daemon) saveAutoServers(cfg *Config) {
 	auto := make(map[string]ServerConfig)
 	for name := range d.autoServers {
@@ -172,11 +143,22 @@ func (d *Daemon) Run() error {
 
 	d.waitForContainers(ctx, cfg)
 
-	servers, _ := discoverServers(cfg.Watch, cfg.Servers)
-	d.restoreLastBackups(servers)
+	snapshots := readLastSnapshots(d.cfgPath)
+	for name, snap := range snapshots {
+		key := watchKey(cfg, name)
+		if key != "" && d.lastBackups[key] == nil {
+			d.lastBackups[key] = &lastBackup{local: snap.Local, nas: snap.NAS}
+		}
+	}
 
-	lastBackups := readLastBackup(d.cfgPath)
-	recent, due := serverBuckets(servers, lastBackups, cfg.Global.BackupInterval.Duration)
+	var recent, due []string
+	for name, snap := range snapshots {
+		if time.Since(snap.Time) < cfg.Global.BackupInterval.Duration {
+			recent = append(recent, name)
+		} else {
+			due = append(due, name)
+		}
+	}
 	if len(due) == 0 && len(recent) > 0 {
 		slog.Info("skipping initial backup, all servers backed up within interval",
 			"recent", recent, "interval", cfg.Global.BackupInterval.Duration)
@@ -213,19 +195,13 @@ func (d *Daemon) Run() error {
 	}
 }
 
-func serverBuckets(servers []struct {
-	Watch  WatchConfig
-	Name   string
-	Server ServerConfig
-}, lastBackups map[string]time.Time, interval time.Duration) (recent, due []string) {
-	for _, s := range servers {
-		if s.Server.Enabled && time.Since(lastBackups[s.Name]) < interval {
-			recent = append(recent, s.Name)
-		} else {
-			due = append(due, s.Name)
+func watchKey(cfg *Config, serverName string) string {
+	for _, w := range cfg.Watch {
+		if _, err := os.ReadDir(filepath.Join(w.Path, serverName)); err == nil {
+			return w.Namespace + "/" + serverName
 		}
 	}
-	return
+	return ""
 }
 
 func serverNames(servers []struct {
@@ -342,7 +318,7 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 		d.lastBackups[key] = prev
 		d.jobTracker.Remove(key)
 
-		writeLastBackup(d.cfgPath, s.Name)
+		writeLastSnapshot(d.cfgPath, s.Name, prev.local, prev.nas)
 
 		pruneLocalByCount(
 			s.Watch.backupDir(s.Name),

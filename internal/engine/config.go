@@ -484,8 +484,14 @@ func lastBackupPath(cfgPath string) string {
 	return filepath.Join(filepath.Dir(cfgPath), ".last-backup")
 }
 
-func readLastBackup(cfgPath string) map[string]time.Time {
-	m := make(map[string]time.Time)
+type lastSnapshotEntry struct {
+	Time  time.Time
+	Local string
+	NAS   string
+}
+
+func readLastSnapshots(cfgPath string) map[string]lastSnapshotEntry {
+	m := make(map[string]lastSnapshotEntry)
 	data, err := os.ReadFile(lastBackupPath(cfgPath))
 	if err != nil {
 		return m
@@ -495,28 +501,35 @@ func readLastBackup(cfgPath string) map[string]time.Time {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
+		parts := strings.SplitN(line, "=", 4)
+		if len(parts) < 2 {
 			continue
 		}
 		ts, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
 			continue
 		}
-		m[parts[0]] = time.Unix(ts, 0)
+		entry := lastSnapshotEntry{Time: time.Unix(ts, 0)}
+		if len(parts) >= 3 {
+			entry.Local = parts[2]
+		}
+		if len(parts) >= 4 {
+			entry.NAS = parts[3]
+		}
+		m[parts[0]] = entry
 	}
 	return m
 }
 
-func writeLastBackup(cfgPath string, server string) {
-	m := readLastBackup(cfgPath)
-	m[server] = time.Now()
+func writeLastSnapshot(cfgPath, server, localPath, nasPath string) {
+	m := readLastSnapshots(cfgPath)
+	m[server] = lastSnapshotEntry{Time: time.Now(), Local: localPath, NAS: nasPath}
 	f, err := os.Create(lastBackupPath(cfgPath))
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	for name, ts := range m {
-		fmt.Fprintf(f, "%s=%d\n", name, ts.Unix())
+	for name, e := range m {
+		fmt.Fprintf(f, "%s=%d=%s=%s\n", name, e.Time.Unix(), e.Local, e.NAS)
 	}
 }
