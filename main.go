@@ -4,13 +4,28 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 const version = "0.1.0"
 
 var defaultConfigPaths = []string{
 	"/etc/mc-backup/config.toml",
-	os.ExpandEnv("$HOME/.config/mc-backup/config.toml"),
+}
+
+func findConfig() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		homePath := filepath.Join(home, ".config", "mc-backup", "config.toml")
+		if _, err := os.Stat(homePath); err == nil {
+			return homePath
+		}
+	}
+	for _, p := range defaultConfigPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return defaultConfigPaths[0]
 }
 
 func main() {
@@ -120,13 +135,4 @@ func configCmd() {
 		fmt.Fprintf(os.Stderr, "unknown config action: %s\n", args[0])
 		os.Exit(1)
 	}
-}
-
-func findConfig() string {
-	for _, p := range defaultConfigPaths {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return defaultConfigPaths[0]
 }

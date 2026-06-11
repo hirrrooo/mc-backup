@@ -25,3 +25,24 @@ func TestFallbackContainerName(t *testing.T) {
 		t.Errorf("expected creative-mc-1, got %q", name)
 	}
 }
+
+func TestIsValidServerName(t *testing.T) {
+	tests := []struct {
+		name  string
+		valid bool
+	}{
+		{"creative", true},
+		{"my-server_v2", true},
+		{"hello.world", true},
+		{"../../etc", false},
+		{"hello';rm -rf /", false},
+		{"foo bar", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		got := isValidServerName(tt.name)
+		if got != tt.valid {
+			t.Errorf("isValidServerName(%q) = %v, want %v", tt.name, got, tt.valid)
+		}
+	}
+}

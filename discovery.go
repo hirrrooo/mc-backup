@@ -19,6 +19,28 @@ func composeFileCandidates() []string {
 	return []string{"docker-compose.yml", "compose.yml", "docker-compose.yaml", "compose.yaml"}
 }
 
+func isValidServerName(name string) bool {
+	if len(name) == 0 || len(name) > 64 {
+		return false
+	}
+	for _, c := range name {
+		if c >= 'a' && c <= 'z' {
+			continue
+		}
+		if c >= 'A' && c <= 'Z' {
+			continue
+		}
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		if c == '-' || c == '_' || c == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func fallbackContainerName(serverName string) string {
 	return serverName + "-mc-1"
 }
@@ -80,6 +102,10 @@ func discoverServers(watches []WatchConfig, cfg *Config) []struct {
 				continue
 			}
 			name := e.Name()
+			if !isValidServerName(name) {
+				slog.Warn("discovery: skipping invalid server name", "name", name, "path", w.Path)
+				continue
+			}
 			server, exists := cfg.Servers[name]
 			if exists && !server.Enabled {
 				continue
