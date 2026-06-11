@@ -12,6 +12,18 @@ import (
 	"log/slog"
 )
 
+func sshBaseArgs(nas NASConfig) []string {
+	args := []string{"ssh"}
+	if nas.SSHPort != 0 && nas.SSHPort != 22 {
+		args = append(args, "-p", fmt.Sprintf("%d", nas.SSHPort))
+	}
+	if nas.SSHKey != "" {
+		args = append(args, "-i", os.ExpandEnv(nas.SSHKey))
+	}
+	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
+	return args
+}
+
 func localRsyncArgs(dataDir, prevBackup, destDir string, excludes []string) []string {
 	args := []string{"rsync", "-a"}
 	if prevBackup != "" {
@@ -36,14 +48,7 @@ func nasRsyncArgs(dataDir, prevBackup, destDir string, nas NASConfig, maxMbps fl
 	for _, ex := range excludes {
 		args = append(args, fmt.Sprintf("--exclude=%s", ex))
 	}
-	sshArgs := []string{"ssh"}
-	if nas.SSHPort != 0 && nas.SSHPort != 22 {
-		sshArgs = append(sshArgs, "-p", fmt.Sprintf("%d", nas.SSHPort))
-	}
-	if nas.SSHKey != "" {
-		sshArgs = append(sshArgs, "-i", os.ExpandEnv(nas.SSHKey))
-	}
-	sshArgs = append(sshArgs, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
+	sshArgs := sshBaseArgs(nas)
 	args = append(args, "-e", strings.Join(sshArgs, " "))
 	args = append(args, dataDir+"/", fmt.Sprintf("%s:%s/", sshRemote, destDir))
 	return args
@@ -59,15 +64,8 @@ func runRsync(ctx context.Context, args []string) error {
 
 func checkNASReady(ctx context.Context, nas NASConfig) error {
 	sentinel := fmt.Sprintf("%s/.nas-ready", nas.DestRoot)
-	args := []string{"ssh"}
-	if nas.SSHPort != 0 && nas.SSHPort != 22 {
-		args = append(args, "-p", fmt.Sprintf("%d", nas.SSHPort))
-	}
-	if nas.SSHKey != "" {
-		args = append(args, "-i", os.ExpandEnv(nas.SSHKey))
-	}
-	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-		fmt.Sprintf("%s@%s", nas.SSHUser, nas.SSHHost),
+	args := sshBaseArgs(nas)
+	args = append(args, fmt.Sprintf("%s@%s", nas.SSHUser, nas.SSHHost),
 		fmt.Sprintf("test -f %s", sentinel),
 	)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
@@ -106,7 +104,7 @@ func NewBackupEngine(cfg Config) *BackupEngine {
 	return &BackupEngine{cfg: cfg}
 }
 
-func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, serverName string, server ServerConfig, prevBackupPath string) (destPath string, rerr error) {
+func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, serverName string, server ServerConfig, prevLocalBackup, prevNASBackup string) (destPath string, usedSSH bool, rerr error) {
 	dataDir := server.DataDir
 	if dataDir == "" {
 		dataDir = filepath.Join(watch.Path, serverName)
@@ -119,7 +117,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 	}
 
 	if err := runRcon(ctx, container, server.RconPassword, "save-off", rconRetries, rconRetryInterval); err != nil {
-		return "", fmt.Errorf("save-off: %w", err)
+		return "", false, fmt.Errorf("save-off: %w", err)
 	}
 
 	defer func() {
@@ -138,7 +136,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 	}()
 
 	if err := runRcon(ctx, container, server.RconPassword, "save-all flush", rconRetries, rconRetryInterval); err != nil {
-		return "", fmt.Errorf("save-all flush: %w", err)
+		return "", false, fmt.Errorf("save-all flush: %w", err)
 	}
 
 	exec.Command("sync").Run()
@@ -164,30 +162,26 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 
 	if useSSH {
 		if err := checkNASReady(ctx, be.cfg.NAS); err != nil {
-			return "", fmt.Errorf("NAS not ready: %w", err)
+			return "", false, fmt.Errorf("NAS not ready: %w", err)
 		}
 		destDir := fmt.Sprintf("%s/%s/%s/%s", be.cfg.NAS.DestRoot, watch.Namespace, serverName, ts)
-		args := nasRsyncArgs(dataDir, prevBackupPath, destDir, be.cfg.NAS, be.cfg.Global.MaxMBps, excludes)
+		args := nasRsyncArgs(dataDir, prevNASBackup, destDir, be.cfg.NAS, be.cfg.Global.MaxMBps, excludes)
 		if err := runRsync(ctx, args); err != nil {
-			return "", fmt.Errorf("NAS rsync: %w", err)
+			return "", false, fmt.Errorf("NAS rsync: %w", err)
 		}
 		destPath = destDir
 	} else {
 		backupDir := watch.backupDir(serverName)
 		destPath = filepath.Join(backupDir, ts)
-		var prevLocal string
-		if prevBackupPath != "" {
-			prevLocal = prevBackupPath
-		}
 		if err := os.MkdirAll(destPath, 0755); err != nil {
-			return "", fmt.Errorf("mkdir: %w", err)
+			return "", false, fmt.Errorf("mkdir: %w", err)
 		}
-		args := localRsyncArgs(dataDir, prevLocal, destPath, excludes)
+		args := localRsyncArgs(dataDir, prevLocalBackup, destPath, excludes)
 		if err := runRsync(ctx, args); err != nil {
-			return "", fmt.Errorf("local rsync: %w", err)
+			return "", false, fmt.Errorf("local rsync: %w", err)
 		}
 	}
 
 	slog.Info("backup complete", "server", serverName, "dest", destPath, "ssh_only", useSSH)
-	return destPath, nil
+	return destPath, useSSH, nil
 }

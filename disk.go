@@ -1,8 +1,10 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
+	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -29,15 +31,18 @@ func totalDiskSpace(path string) uint64 {
 }
 
 func dirSize(path string) (int64, error) {
-	var size int64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			return filepath.SkipDir
-		}
-		if !info.IsDir() {
-			size += info.Size()
-		}
-		return nil
-	})
-	return size, err
+	cmd := exec.Command("du", "-sb", path)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 1 {
+		return 0, fmt.Errorf("du: unexpected output: %s", string(out))
+	}
+	size, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("du: parse size: %w", err)
+	}
+	return size, nil
 }

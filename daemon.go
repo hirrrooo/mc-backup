@@ -11,19 +11,25 @@ import (
 	"log/slog"
 )
 
+type lastBackup struct {
+	local string
+	nas   string
+}
+
 type Daemon struct {
 	cfgPath     string
 	ac          atomicConfig
 	jobTracker  *JobTracker
-	lastBackups map[string]string
+	lastBackups map[string]*lastBackup
 	cycleMu     sync.Mutex
+	debug       bool
 }
 
 func NewDaemon(cfgPath string, cfg *Config) *Daemon {
 	d := &Daemon{
 		cfgPath:     cfgPath,
 		jobTracker:  NewJobTracker(),
-		lastBackups: make(map[string]string),
+		lastBackups: make(map[string]*lastBackup),
 	}
 	d.ac.Store(cfg)
 	return d
@@ -31,7 +37,7 @@ func NewDaemon(cfgPath string, cfg *Config) *Daemon {
 
 func (d *Daemon) Run() error {
 	cfg := d.ac.Load()
-	setupLogging(false)
+	setupLogging(d.debug)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -102,7 +108,10 @@ func (d *Daemon) runBackupCycle(ctx context.Context) {
 
 		be := NewBackupEngine(*cfg)
 		key := s.Watch.Namespace + "/" + s.Name
-		prevBackup := d.lastBackups[key]
+		prev := d.lastBackups[key]
+		if prev == nil {
+			prev = &lastBackup{}
+		}
 
 		d.jobTracker.Add(key, &JobInfo{
 			ServerName: s.Name,
@@ -110,19 +119,23 @@ func (d *Daemon) runBackupCycle(ctx context.Context) {
 			State:      "Starting",
 		})
 
-		destPath, err := be.BackupServer(ctx, s.Watch, s.Name, s.Server, prevBackup)
+		destPath, usedSSH, err := be.BackupServer(ctx, s.Watch, s.Name, s.Server, prev.local, prev.nas)
 		if err != nil {
 			slog.Error("backup failed", "server", s.Name, "error", err)
 			d.jobTracker.Remove(key)
 			continue
 		}
 
-		d.lastBackups[key] = destPath
+		if usedSSH {
+			prev.nas = destPath
+		} else {
+			prev.local = destPath
+		}
+		d.lastBackups[key] = prev
 		d.jobTracker.Remove(key)
 
 		pruneLocalByCount(
 			s.Watch.backupDir(s.Name),
-			s.Name,
 			s.Watch.LocalKeep,
 		)
 

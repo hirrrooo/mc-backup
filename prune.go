@@ -11,7 +11,7 @@ import (
 	"log/slog"
 )
 
-func pruneLocalByCount(localPath, prefix string, keep int) {
+func pruneLocalByCount(localPath string, keep int) {
 	if keep <= 0 {
 		return
 	}
@@ -64,14 +64,7 @@ func pruneNASByCount(ctx context.Context, nas NASConfig, destRoot, namespace, se
 }
 
 func runSSH(ctx context.Context, nas NASConfig, remoteCmd string) error {
-	args := []string{"ssh"}
-	if nas.SSHPort != 0 && nas.SSHPort != 22 {
-		args = append(args, "-p", fmt.Sprintf("%d", nas.SSHPort))
-	}
-	if nas.SSHKey != "" {
-		args = append(args, "-i", os.ExpandEnv(nas.SSHKey))
-	}
-	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
+	args := sshBaseArgs(nas)
 	args = append(args, fmt.Sprintf("%s@%s", nas.SSHUser, nas.SSHHost))
 	args = append(args, remoteCmd)
 

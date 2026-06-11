@@ -327,7 +327,7 @@ func setConfigValue(path, key, val string) error {
 		if len(parts) < 3 {
 			return fmt.Errorf("server key requires <name>.<field>")
 		}
-		serverName := parts[1]
+		serverName := strings.ToLower(parts[1])
 		field := parts[2]
 		s := cfg.Servers[serverName]
 		setServerField(&s, field, val)

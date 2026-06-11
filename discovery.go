@@ -69,12 +69,14 @@ func detectContainerName(serverDir, serverName string) string {
 		}
 	}
 
-	cmd := exec.Command("docker", "ps", "--filter", fmt.Sprintf("name=%s", serverName), "--format", "{{.Names}}")
+	cmd := exec.Command("docker", "ps", "--filter", fmt.Sprintf("name=^/%s-", serverName), "--format", "{{.Names}}")
 	out, err := cmd.Output()
 	if err == nil {
 		names := strings.Fields(string(out))
-		if len(names) > 0 {
-			return names[0]
+		for _, n := range names {
+			if strings.HasPrefix(n, serverName+"-") {
+				return n
+			}
 		}
 	}
 

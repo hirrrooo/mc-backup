@@ -57,14 +57,8 @@ func (ae *ArchiveEngine) ArchiveIfNeeded(ctx context.Context, watch WatchConfig,
 
 func (ae *ArchiveEngine) migrateOne(ctx context.Context, watch WatchConfig, serverName, snapshot string) {
 	nasSentinel := fmt.Sprintf("%s/.nas-ready", ae.cfg.NAS.DestRoot)
-	checkArgs := []string{"ssh"}
-	if ae.cfg.NAS.SSHPort != 0 && ae.cfg.NAS.SSHPort != 22 {
-		checkArgs = append(checkArgs, "-p", fmt.Sprintf("%d", ae.cfg.NAS.SSHPort))
-	}
-	if ae.cfg.NAS.SSHKey != "" {
-		checkArgs = append(checkArgs, "-i", os.ExpandEnv(ae.cfg.NAS.SSHKey))
-	}
-	checkArgs = append(checkArgs, "-o", "BatchMode=yes",
+	checkArgs := sshBaseArgs(ae.cfg.NAS)
+	checkArgs = append(checkArgs,
 		fmt.Sprintf("%s@%s", ae.cfg.NAS.SSHUser, ae.cfg.NAS.SSHHost),
 		fmt.Sprintf("test -f %s", nasSentinel),
 	)

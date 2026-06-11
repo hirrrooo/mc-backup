@@ -13,7 +13,7 @@ func TestPruneLocalByCount(t *testing.T) {
 		os.Mkdir(filepath.Join(tmp, d), 0755)
 	}
 
-	pruneLocalByCount(tmp, "server", 3)
+	pruneLocalByCount(tmp, 3)
 
 	remaining, _ := os.ReadDir(tmp)
 	if len(remaining) != 3 {
@@ -28,7 +28,7 @@ func TestPruneLocalByCountDisabled(t *testing.T) {
 	tmp := t.TempDir()
 	os.Mkdir(filepath.Join(tmp, "server-20250611-1000"), 0755)
 
-	pruneLocalByCount(tmp, "server", 0)
+	pruneLocalByCount(tmp, 0)
 
 	remaining, _ := os.ReadDir(tmp)
 	if len(remaining) != 1 {
@@ -40,7 +40,7 @@ func TestPruneLocalByCountNoMatch(t *testing.T) {
 	tmp := t.TempDir()
 	os.Mkdir(filepath.Join(tmp, "other-dir"), 0755)
 
-	pruneLocalByCount(tmp, "server", 2)
+	pruneLocalByCount(tmp, 2)
 
 	remaining, _ := os.ReadDir(tmp)
 	if len(remaining) != 1 {

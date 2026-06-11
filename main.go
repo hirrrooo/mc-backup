@@ -66,6 +66,7 @@ Flags:
 func runCmd() {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	cfgPath := fs.String("config", findConfig(), "config file path")
+	debug := fs.Bool("debug", false, "enable debug logging")
 	fs.Parse(os.Args[2:])
 
 	cfg, err := LoadConfig(*cfgPath)
@@ -75,6 +76,7 @@ func runCmd() {
 	}
 
 	d := NewDaemon(*cfgPath, cfg)
+	d.debug = *debug
 	if err := d.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
 		os.Exit(1)

@@ -40,16 +40,6 @@ func (jt *JobTracker) Remove(key string) {
 	jt.mu.Unlock()
 }
 
-func (jt *JobTracker) Update(key, state string, bytesMoved, totalSize int64) {
-	jt.mu.Lock()
-	if job, ok := jt.jobs[key]; ok {
-		job.State = state
-		job.BytesMoved = bytesMoved
-		job.TotalSize = totalSize
-	}
-	jt.mu.Unlock()
-}
-
 func (jt *JobTracker) Snapshot() map[string]*JobInfo {
 	jt.mu.RLock()
 	defer jt.mu.RUnlock()
