@@ -75,6 +75,15 @@ func checkNASReady(ctx context.Context, nas NASConfig) error {
 	return nil
 }
 
+func ensureNASDir(ctx context.Context, nas NASConfig, path string) error {
+	args := sshBaseArgs(nas)
+	args = append(args, fmt.Sprintf("%s@%s", nas.SSHUser, nas.SSHHost),
+		fmt.Sprintf("mkdir -p %s", path),
+	)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	return cmd.Run()
+}
+
 func isBackupDir(name string) bool {
 	if len(name) != 13 {
 		return false
@@ -165,6 +174,10 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 			return "", false, fmt.Errorf("NAS not ready: %w", err)
 		}
 		destDir := fmt.Sprintf("%s/%s/%s/%s", be.cfg.NAS.DestRoot, watch.Namespace, serverName, ts)
+		parent := destDir[:strings.LastIndex(destDir, "/")]
+		if err := ensureNASDir(ctx, be.cfg.NAS, parent); err != nil {
+			return "", false, fmt.Errorf("create NAS dir: %w", err)
+		}
 		args := nasRsyncArgs(dataDir, prevNASBackup, destDir, be.cfg.NAS, be.cfg.Global.MaxMBps, excludes)
 		if err := runRsync(ctx, args); err != nil {
 			return "", false, fmt.Errorf("NAS rsync: %w", err)

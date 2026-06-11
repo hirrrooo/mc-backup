@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"log/slog"
 )
@@ -77,6 +78,11 @@ func (ae *ArchiveEngine) migrateOne(ctx context.Context, watch WatchConfig, serv
 
 	localSrc := filepath.Join(watch.backupDir(serverName), snapshot)
 	nasDest := fmt.Sprintf("%s/%s/%s/%s", ae.cfg.NAS.DestRoot, watch.Namespace, serverName, snapshot)
+	parent := nasDest[:strings.LastIndex(nasDest, "/")]
+	if err := ensureNASDir(ctx, ae.cfg.NAS, parent); err != nil {
+		slog.Error("archive: failed to create NAS dir", "path", parent, "error", err)
+		return
+	}
 	args := nasRsyncArgs(localSrc, "", nasDest, ae.cfg.NAS, ae.cfg.Global.MaxMBps, nil)
 
 	slog.Info("archiving to NAS", "server", serverName, "snapshot", snapshot)
