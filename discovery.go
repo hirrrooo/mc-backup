@@ -1,0 +1,117 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"log/slog"
+)
+
+type composeService struct {
+	Name string `json:"Name"`
+}
+
+func composeFileCandidates() []string {
+	return []string{"docker-compose.yml", "compose.yml", "docker-compose.yaml", "compose.yaml"}
+}
+
+func fallbackContainerName(serverName string) string {
+	return serverName + "-mc-1"
+}
+
+func detectContainerName(serverDir, serverName string) string {
+	for _, fname := range composeFileCandidates() {
+		composePath := filepath.Join(serverDir, fname)
+		if _, err := os.Stat(composePath); os.IsNotExist(err) {
+			continue
+		}
+		cmd := exec.Command("docker", "compose", "-f", composePath, "ps", "--format", "json")
+		out, err := cmd.Output()
+		if err != nil {
+			slog.Warn("discovery: docker compose ps failed", "file", composePath, "error", err)
+			continue
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(out)))
+		for decoder.More() {
+			var svc composeService
+			if err := decoder.Decode(&svc); err != nil {
+				continue
+			}
+			if svc.Name != "" {
+				return svc.Name
+			}
+		}
+	}
+
+	cmd := exec.Command("docker", "ps", "--filter", fmt.Sprintf("name=%s", serverName), "--format", "{{.Names}}")
+	out, err := cmd.Output()
+	if err == nil {
+		names := strings.Fields(string(out))
+		if len(names) > 0 {
+			return names[0]
+		}
+	}
+
+	return fallbackContainerName(serverName)
+}
+
+func discoverServers(watches []WatchConfig, cfg *Config) []struct {
+	Watch  WatchConfig
+	Name   string
+	Server ServerConfig
+} {
+	var results []struct {
+		Watch  WatchConfig
+		Name   string
+		Server ServerConfig
+	}
+	for _, w := range watches {
+		entries, err := os.ReadDir(w.Path)
+		if err != nil {
+			slog.Warn("discovery: cannot read watch path", "path", w.Path, "error", err)
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			server, exists := cfg.Servers[name]
+			if exists && !server.Enabled {
+				continue
+			}
+			if exists {
+				results = append(results, struct {
+					Watch  WatchConfig
+					Name   string
+					Server ServerConfig
+				}{Watch: w, Name: name, Server: server})
+				continue
+			}
+			containerName := detectContainerName(filepath.Join(w.Path, name), name)
+			newServer := ServerConfig{
+				Enabled:       true,
+				ContainerName: containerName,
+			}
+			slog.Info("discovery: provisioning new server",
+				"name", name,
+				"container", containerName,
+				"namespace", w.Namespace,
+			)
+			if cfg.Servers == nil {
+				cfg.Servers = make(map[string]ServerConfig)
+			}
+			cfg.Servers[name] = newServer
+			results = append(results, struct {
+				Watch  WatchConfig
+				Name   string
+				Server ServerConfig
+			}{Watch: w, Name: name, Server: newServer})
+		}
+	}
+	return results
+}
