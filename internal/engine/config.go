@@ -488,3 +488,24 @@ func getServerFieldStr(s ServerConfig, key string) string {
 	}
 	return ""
 }
+
+func lastBackupPath(cfgPath string) string {
+	return filepath.Join(filepath.Dir(cfgPath), ".last-backup")
+}
+
+func readLastBackup(cfgPath string) time.Time {
+	data, err := os.ReadFile(lastBackupPath(cfgPath))
+	if err != nil {
+		return time.Time{}
+	}
+	ts, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.Unix(ts, 0)
+}
+
+func writeLastBackup(cfgPath string) {
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	os.WriteFile(lastBackupPath(cfgPath), []byte(ts), 0644)
+}

@@ -142,7 +142,16 @@ func (d *Daemon) Run() error {
 
 	d.waitForContainers(ctx, cfg)
 
-	d.runBackupCycle(ctx, "")
+	last := readLastBackup(d.cfgPath)
+	elapsed := time.Since(last)
+	if elapsed < cfg.Global.BackupInterval.Duration {
+		slog.Info("skipping initial backup, last backup was recent",
+			"elapsed", elapsed.Round(time.Second),
+			"interval", cfg.Global.BackupInterval.Duration,
+		)
+	} else {
+		d.runBackupCycle(ctx, "")
+	}
 
 	backupTicker := time.NewTicker(cfg.Global.BackupInterval.Duration)
 	defer backupTicker.Stop()
@@ -274,6 +283,8 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 		pruneNASByDays(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneDays)
 		pruneNASByCount(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneCount)
 	}
+
+	writeLastBackup(d.cfgPath)
 }
 
 func (d *Daemon) runDiscovery(ctx context.Context) {
