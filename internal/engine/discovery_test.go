@@ -33,7 +33,7 @@ func TestIsValidServerName(t *testing.T) {
 	}{
 		{"creative", true},
 		{"my-server_v2", true},
-		{"hello.world", true},
+		{"hello-world", true},
 		{"../../etc", false},
 		{"hello';rm -rf /", false},
 		{"foo bar", false},

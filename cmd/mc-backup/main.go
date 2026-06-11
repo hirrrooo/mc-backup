@@ -18,15 +18,15 @@ var defaultConfigPaths = []string{
 }
 
 func findConfig() string {
+	for _, p := range defaultConfigPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		homePath := filepath.Join(home, ".config", "mc-backup", "config.toml")
 		if _, err := os.Stat(homePath); err == nil {
 			return homePath
-		}
-	}
-	for _, p := range defaultConfigPaths {
-		if _, err := os.Stat(p); err == nil {
-			return p
 		}
 	}
 	return defaultConfigPaths[0]

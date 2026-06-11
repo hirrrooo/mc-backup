@@ -34,7 +34,7 @@ func isValidServerName(name string) bool {
 		if c >= '0' && c <= '9' {
 			continue
 		}
-		if c == '-' || c == '_' || c == '.' {
+		if c == '-' || c == '_' {
 			continue
 		}
 		return false

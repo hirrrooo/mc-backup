@@ -175,9 +175,6 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 	servers := discoverServers(cfg.Watch, cfg)
 
 	if len(cfg.Servers) > oldLen {
-		if err := SaveAutoServers(d.cfgPath, cfg.Servers); err != nil {
-			slog.Error("failed to save auto-provisioned config", "error", err)
-		}
 		slog.Info("auto-provisioned new servers in backup cycle")
 	}
 
@@ -278,9 +275,6 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 	}
 
 	if cfgNeedsSave {
-		if err := SaveAutoServers(d.cfgPath, cfg.Servers); err != nil {
-			slog.Error("failed to save auto-provisioned config", "error", err)
-		}
 		slog.Info("new servers discovered, triggering immediate backup cycle")
 		go d.runBackupCycle(ctx, "")
 	}
