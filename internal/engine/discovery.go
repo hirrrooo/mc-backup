@@ -107,16 +107,17 @@ func containerRunning(container string) bool {
 	return strings.TrimSpace(string(out)) == container
 }
 
-func discoverServers(watches []WatchConfig, cfg *Config) []struct {
+func discoverServers(watches []WatchConfig, cfg *Config) ([]struct {
 	Watch  WatchConfig
 	Name   string
 	Server ServerConfig
-} {
+}, []string) {
 	var results []struct {
 		Watch  WatchConfig
 		Name   string
 		Server ServerConfig
 	}
+	var newServers []string
 	for _, w := range watches {
 		entries, err := os.ReadDir(w.Path)
 		if err != nil {
@@ -158,6 +159,7 @@ func discoverServers(watches []WatchConfig, cfg *Config) []struct {
 				cfg.Servers = make(map[string]ServerConfig)
 			}
 			cfg.Servers[name] = newServer
+			newServers = append(newServers, name)
 			results = append(results, struct {
 				Watch  WatchConfig
 				Name   string
@@ -165,5 +167,5 @@ func discoverServers(watches []WatchConfig, cfg *Config) []struct {
 			}{Watch: w, Name: name, Server: newServer})
 		}
 	}
-	return results
+	return results, newServers
 }

@@ -1,4 +1,5 @@
 mc-backup
+*-auto.toml
 *.swp
 *.swo
 *~

@@ -100,6 +100,11 @@ func loadConfigFile(path string) (*Config, error) {
 		Servers: make(map[string]ServerConfig),
 	}
 
+	autoPath := strings.TrimSuffix(path, ".toml") + "-auto.toml"
+	if _, err := toml.DecodeFile(autoPath, cfg); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("parse %s: %w", autoPath, err)
+	}
+
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
@@ -125,6 +130,43 @@ func SaveConfig(path string, cfg *Config) error {
 	enc := toml.NewEncoder(f)
 	enc.Indent = ""
 	return enc.Encode(cfg)
+}
+
+func autoServersPath(cfgPath string) string {
+	return strings.TrimSuffix(cfgPath, ".toml") + "-auto.toml"
+}
+
+func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
+	autoPath := autoServersPath(cfgPath)
+	if len(servers) == 0 {
+		os.Remove(autoPath)
+		return nil
+	}
+	f, err := os.Create(autoPath)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", autoPath, err)
+	}
+	defer f.Close()
+	for name, s := range servers {
+		fmt.Fprintf(f, "\n[server.%s]\n", name)
+		fmt.Fprintf(f, "enabled = %v\n", s.Enabled)
+		if s.SSHOnly {
+			fmt.Fprintf(f, "ssh_only = true\n")
+		}
+		if s.ContainerName != "" && s.ContainerName != name+"-mc-1" {
+			fmt.Fprintf(f, "container_name = %q\n", s.ContainerName)
+		}
+		if s.RconPassword != "" {
+			fmt.Fprintf(f, "rcon_password = %q\n", s.RconPassword)
+		}
+		if s.DataDir != "" {
+			fmt.Fprintf(f, "data_dir = %q\n", s.DataDir)
+		}
+		if s.PauseIfNoPlayers {
+			fmt.Fprintf(f, "pause_if_no_players = true\n")
+		}
+	}
+	return nil
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -254,6 +296,11 @@ func watchConfig(path string, ac *atomicConfig) error {
 	if err := watcher.Add(path); err != nil {
 		watcher.Close()
 		return fmt.Errorf("watch %s: %w", path, err)
+	}
+	if autoPath := autoServersPath(path); autoPath != "" {
+		if err := watcher.Add(autoPath); err != nil && !os.IsNotExist(err) {
+			slog.Warn("cannot watch auto config", "path", autoPath, "error", err)
+		}
 	}
 
 	go func() {

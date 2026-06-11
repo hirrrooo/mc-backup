@@ -73,7 +73,7 @@ sudo systemctl enable mc-backup
 
 ## Configuration
 
-Config lives at `~/.config/mc-backup/config.toml` (with `/etc/mc-backup/config.toml` as fallback). Environment variables override with the prefix `MC_BACKUP_`, e.g. `MC_BACKUP_NAS_SSH_HOST=nas2.local`.
+Config lives at `~/.config/mc-backup/config.toml` (with `/etc/mc-backup/config.toml` as fallback). Auto-provisioned server entries are written to `config-auto.toml` alongside your config — your hand-edited file is never touched. Environment variables override with the prefix `MC_BACKUP_`, e.g. `MC_BACKUP_NAS_SSH_HOST=nas2.local`.
 
 ### Required Settings
 

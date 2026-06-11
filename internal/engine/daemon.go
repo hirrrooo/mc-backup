@@ -21,6 +21,7 @@ type Daemon struct {
 	ac          atomicConfig
 	jobTracker  *JobTracker
 	lastBackups map[string]*lastBackup
+	autoServers map[string]bool
 	cycleMu     sync.Mutex
 	cancelMu    sync.Mutex
 	cancelFn    context.CancelFunc
@@ -32,13 +33,14 @@ func NewDaemon(cfgPath string, cfg *Config) *Daemon {
 		cfgPath:     cfgPath,
 		jobTracker:  NewJobTracker(),
 		lastBackups: make(map[string]*lastBackup),
+		autoServers: make(map[string]bool),
 	}
 	d.ac.Store(cfg)
 	return d
 }
 
 func (d *Daemon) waitForContainers(ctx context.Context, cfg *Config) {
-	servers := discoverServers(cfg.Watch, cfg)
+	servers, _ := discoverServers(cfg.Watch, cfg)
 	if len(servers) == 0 {
 		slog.Info("no servers found, skipping container uptime check")
 		return
@@ -97,6 +99,18 @@ func (d *Daemon) Cancel() {
 	defer d.cancelMu.Unlock()
 	if d.cancelFn != nil {
 		d.cancelFn()
+	}
+}
+
+func (d *Daemon) saveAutoServers(cfg *Config) {
+	auto := make(map[string]ServerConfig)
+	for name := range d.autoServers {
+		if s, ok := cfg.Servers[name]; ok {
+			auto[name] = s
+		}
+	}
+	if err := SaveAutoServers(d.cfgPath, auto); err != nil {
+		slog.Error("failed to save auto-provisioned config", "error", err)
 	}
 }
 
@@ -171,10 +185,13 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 	}()
 
 	cfg := d.ac.Load()
-	oldLen := len(cfg.Servers)
-	servers := discoverServers(cfg.Watch, cfg)
+	servers, newServers := discoverServers(cfg.Watch, cfg)
 
-	if len(cfg.Servers) > oldLen {
+	for _, name := range newServers {
+		d.autoServers[name] = true
+	}
+	if len(newServers) > 0 {
+		d.saveAutoServers(cfg)
 		slog.Info("auto-provisioned new servers in backup cycle")
 	}
 
@@ -259,22 +276,14 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 
 func (d *Daemon) runDiscovery(ctx context.Context) {
 	cfg := d.ac.Load()
-	cfgNeedsSave := false
-	oldServers := make(map[string]bool)
-	for k := range cfg.Servers {
-		oldServers[k] = true
+	_, newServers := discoverServers(cfg.Watch, cfg)
+
+	for _, name := range newServers {
+		d.autoServers[name] = true
 	}
 
-	discoverServers(cfg.Watch, cfg)
-
-	for k := range cfg.Servers {
-		if !oldServers[k] {
-			cfgNeedsSave = true
-			break
-		}
-	}
-
-	if cfgNeedsSave {
+	if len(newServers) > 0 {
+		d.saveAutoServers(cfg)
 		slog.Info("new servers discovered, triggering immediate backup cycle")
 		go d.runBackupCycle(ctx, "")
 	}
