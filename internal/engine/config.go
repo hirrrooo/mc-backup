@@ -180,21 +180,11 @@ func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 	for name, s := range servers {
 		fmt.Fprintf(f, "\n[server.%s]\n", name)
 		fmt.Fprintf(f, "enabled = %v\n", s.Enabled)
-		if s.SSHOnly {
-			fmt.Fprintf(f, "ssh_only = true\n")
-		}
-		if s.ContainerName != "" && s.ContainerName != name+"-mc-1" {
-			fmt.Fprintf(f, "container_name = %q\n", s.ContainerName)
-		}
-		if s.RconPassword != "" {
-			fmt.Fprintf(f, "rcon_password = %q\n", s.RconPassword)
-		}
-		if s.DataDir != "" {
-			fmt.Fprintf(f, "data_dir = %q\n", s.DataDir)
-		}
-		if s.PauseIfNoPlayers {
-			fmt.Fprintf(f, "pause_if_no_players = true\n")
-		}
+		fmt.Fprintf(f, "ssh_only = %v\n", s.SSHOnly)
+		fmt.Fprintf(f, "container_name = %q\n", s.ContainerName)
+		fmt.Fprintf(f, "rcon_password = %q\n", s.RconPassword)
+		fmt.Fprintf(f, "data_dir = %q\n", s.DataDir)
+		fmt.Fprintf(f, "pause_if_no_players = %v\n", s.PauseIfNoPlayers)
 	}
 	return nil
 }
