@@ -267,3 +267,120 @@ func watchConfig(path string, ac *atomicConfig) error {
 	}()
 	return nil
 }
+
+func getConfigValue(cfg *Config, key string) string {
+	parts := strings.Split(key, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	section := parts[0]
+
+	switch section {
+	case "global":
+		return getGlobalField(cfg.Global, parts[1])
+	case "nas":
+		return getNASField(cfg.NAS, parts[1])
+	case "retention":
+		return getRetentionField(cfg.Retention, parts[1])
+	case "server":
+		if len(parts) < 3 {
+			return ""
+		}
+		serverName := parts[1]
+		field := parts[2]
+		if s, ok := cfg.Servers[serverName]; ok {
+			return getServerFieldStr(s, field)
+		}
+		return ""
+	}
+	return ""
+}
+
+func setConfigValue(path, key, val string) error {
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(key, ".")
+	if len(parts) < 2 {
+		return fmt.Errorf("invalid key: %s", key)
+	}
+	section := parts[0]
+
+	switch section {
+	case "global":
+		setGlobalField(&cfg.Global, parts[1], val)
+	case "nas":
+		setNASField(&cfg.NAS, parts[1], val)
+	case "retention":
+		setRetentionField(&cfg.Retention, parts[1], val)
+	case "server":
+		if len(parts) < 3 {
+			return fmt.Errorf("server key requires <name>.<field>")
+		}
+		serverName := parts[1]
+		field := parts[2]
+		s := cfg.Servers[serverName]
+		setServerField(&s, field, val)
+		cfg.Servers[serverName] = s
+	default:
+		return fmt.Errorf("unknown section: %s", section)
+	}
+	return SaveConfig(path, cfg)
+}
+
+func getGlobalField(g GlobalConfig, key string) string {
+	switch key {
+	case "listen_addr":
+		return g.ListenAddr
+	case "max_mbps":
+		return fmt.Sprintf("%.1f", g.MaxMBps)
+	case "backup_interval":
+		return g.BackupInterval.Duration.String()
+	case "initial_delay":
+		return g.InitialDelay.Duration.String()
+	}
+	return ""
+}
+
+func getNASField(n NASConfig, key string) string {
+	switch key {
+	case "ssh_user":
+		return n.SSHUser
+	case "ssh_host":
+		return n.SSHHost
+	case "ssh_port":
+		return fmt.Sprintf("%d", n.SSHPort)
+	case "ssh_key":
+		return n.SSHKey
+	case "dest_root":
+		return n.DestRoot
+	}
+	return ""
+}
+
+func getRetentionField(r RetentionConfig, key string) string {
+	switch key {
+	case "prune_days":
+		return fmt.Sprintf("%d", r.PruneDays)
+	case "prune_count":
+		return fmt.Sprintf("%d", r.PruneCount)
+	}
+	return ""
+}
+
+func getServerFieldStr(s ServerConfig, key string) string {
+	switch key {
+	case "enabled":
+		return fmt.Sprintf("%t", s.Enabled)
+	case "ssh_only":
+		return fmt.Sprintf("%t", s.SSHOnly)
+	case "container_name":
+		return s.ContainerName
+	case "rcon_password":
+		return s.RconPassword
+	case "data_dir":
+		return s.DataDir
+	}
+	return ""
+}
