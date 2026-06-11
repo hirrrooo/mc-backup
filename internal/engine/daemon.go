@@ -24,8 +24,6 @@ type Daemon struct {
 	cycleMu     sync.Mutex
 	cancelMu    sync.Mutex
 	cancelFn    context.CancelFunc
-	backupGuard chan struct{}
-	scanGuard   chan struct{}
 	Debug       bool
 }
 
@@ -34,8 +32,6 @@ func NewDaemon(cfgPath string, cfg *Config) *Daemon {
 		cfgPath:     cfgPath,
 		jobTracker:  NewJobTracker(),
 		lastBackups: make(map[string]*lastBackup),
-		backupGuard: make(chan struct{}, 1),
-		scanGuard:   make(chan struct{}, 1),
 	}
 	d.ac.Store(cfg)
 	return d
@@ -118,26 +114,10 @@ func (d *Daemon) Run() error {
 	startStatusServer(cfg.Global.ListenAddr, d.jobTracker, StatusCallbacks{
 		OnCancel: d.Cancel,
 		OnScan: func() {
-			select {
-			case d.scanGuard <- struct{}{}:
-				go func() {
-					defer func() { <-d.scanGuard }()
-					d.runDiscovery(ctx)
-				}()
-			default:
-				slog.Warn("scan already in progress, ignoring request")
-			}
+			go d.runDiscovery(ctx)
 		},
 		OnBackup: func(server string) {
-			select {
-			case d.backupGuard <- struct{}{}:
-				go func() {
-					defer func() { <-d.backupGuard }()
-					d.runBackupCycle(ctx, server)
-				}()
-			default:
-				slog.Warn("backup already queued, ignoring request")
-			}
+			go d.runBackupCycle(ctx, server)
 		},
 	})
 

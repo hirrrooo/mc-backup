@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -72,11 +73,11 @@ func backupCmd() {
 
 	server := fs.Arg(0)
 
-	url := fmt.Sprintf("http://%s/backup", cfg.Global.ListenAddr)
+	backendURL := fmt.Sprintf("http://%s/backup", cfg.Global.ListenAddr)
 	if server != "" {
-		url += "?server=" + server
+		backendURL += "?server=" + url.QueryEscape(server)
 	}
-	req, err := http.NewRequest(http.MethodPost, url, nil)
+	req, err := http.NewRequest(http.MethodPost, backendURL, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backup: %v\n", err)
 		os.Exit(1)
@@ -90,7 +91,13 @@ func backupCmd() {
 
 	var buf [64]byte
 	n, _ := resp.Body.Read(buf[:])
-	fmt.Printf("backup: %s", buf[:n])
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		fmt.Printf("backup: %s\n", buf[:n])
+	default:
+		fmt.Fprintf(os.Stderr, "backup: daemon returned %d\n", resp.StatusCode)
+		os.Exit(1)
+	}
 }
 
 func postCmd(endpoint string) {
