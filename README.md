@@ -243,3 +243,44 @@ Server names are case-insensitive for env var lookup.
 ```bash
 sudo make uninstall
 ```
+
+## FAQ
+
+**How do I add a new server?**  
+Drop its directory under a watch path (e.g. `/opt/minecraft/servers/docker/servers/new-server/`). The daemon auto-discovers it within 1 minute, creates a `[server.new-server]` config entry, and starts backing it up. Set the RCON password manually: `mc-backup config set server.new-server.rcon_password hunter2`.
+
+**How do I stop backing up a server?**  
+`mc-backup config set server.old-server.enabled false`
+
+**How do I force a large server to skip local SSD entirely?**  
+`mc-backup config set server.big-world.ssh_only true` — backups go straight to NAS over SSH, no local storage used.
+
+**How do I pause all backup operations?**  
+`systemctl stop mc-backup` — sends SIGTERM, allows current cycle to finish and fires deferred `save-on`. Restart with `systemctl start mc-backup`.
+
+**Does rsync re-upload unchanged files?**  
+No. `--link-dest` compares against the previous snapshot. Unchanged files are hard-linked on the destination (zero network transfer, zero extra disk). Only changed blocks are sent over the wire (rsync delta transfer).
+
+**How do I restore from a backup?**  
+Each snapshot is a full directory. From local: `rsync -a /opt/minecraft/servers/docker/servers/survival/backups/20250611-1200/ /opt/minecraft/servers/docker/servers/survival/`. From NAS: add `-e ssh backup@nas:...`.
+
+**What happens if the daemon crashes mid-backup?**  
+The `save-on` command is deferred — it runs even if the function panics or returns early. If the process is SIGKILL'd (not SIGTERM), the deferred function won't run and the server may be left with autosave off. Restart the daemon; the first thing it does on the next cycle is `save-on` as a readiness check.
+
+**What if the NAS is unavailable?**  
+For direct-to-NAS backups (from `ssh_only` or disk threshold routing): the `checkNASReady` sentinel check fails before rsync starts, and the cycle aborts with an error. For archive migrations: the NAS sentinel check in the archive engine skips the migration. Local backups continue normally.
+
+**How do I change the backup interval at runtime?**  
+`mc-backup config set global.backup_interval 30m` — takes effect on the next tick cycle without restart. Changes to `listen_addr` require a restart.
+
+**What does `namespace` do?**  
+It organizes NAS backups into subdirectories: `<dest_root>/<namespace>/<server>/<timestamp>/`. Useful if you have multiple watch paths or host groups (e.g. `minecraft`, `minecraft-testing`).
+
+**Can I have multiple watch paths?**  
+Yes. Add multiple `[[watch]]` blocks with different paths and namespaces. Each is scanned independently for server directories.
+
+**Why is my first backup taking so long?**  
+The first backup has no `--link-dest` target, so it's a full copy of the entire world. Subsequent backups are near-instant for unchanged worlds and proportional to changed data for active worlds.
+
+**Does the backup stop the server?**  
+No. `save-off` disables automatic world saves (chunks saved periodically), but the server continues running and accepting players. `save-all flush` triggers a manual save and flush to disk before rsync runs. `save-on` re-enables autosave. The entire process typically takes seconds plus rsync time.
