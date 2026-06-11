@@ -100,7 +100,7 @@ func (d *Daemon) Run() error {
 	}
 
 	startStatusServer(cfg.Global.ListenAddr, d.jobTracker, d.Cancel, func() {
-		d.runDiscovery(context.Background())
+		d.runDiscovery(ctx)
 	})
 
 	slog.Info("mc-backup daemon starting",
