@@ -45,8 +45,8 @@ func pruneNASByDays(ctx context.Context, nas NASConfig, destRoot, namespace, ser
 	}
 	destDir := fmt.Sprintf("%s/%s/%s", destRoot, namespace, serverName)
 	remoteCmd := fmt.Sprintf(
-		"find %s -maxdepth 1 -type d -name '%s-*' -mtime +%d -exec rm -rf {} +",
-		destDir, serverName, days,
+		"find %s -maxdepth 1 -type d -regex '.*/[0-9]\\{8\\}-[0-9]\\{4\\}' -mtime +%d -exec rm -rf {} +",
+		destDir, days,
 	)
 	return runSSH(ctx, nas, remoteCmd)
 }
@@ -57,8 +57,8 @@ func pruneNASByCount(ctx context.Context, nas NASConfig, destRoot, namespace, se
 	}
 	destDir := fmt.Sprintf("%s/%s/%s", destRoot, namespace, serverName)
 	remoteCmd := fmt.Sprintf(
-		"ls -dt %s/%s-* 2>/dev/null | tail -n +%d | xargs rm -rf",
-		destDir, serverName, count+1,
+		"ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | tail -n +%d | xargs rm -rf",
+		destDir, count+1,
 	)
 	return runSSH(ctx, nas, remoteCmd)
 }

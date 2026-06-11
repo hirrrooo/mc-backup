@@ -131,6 +131,8 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 			slog.Error(saveOnErr.Error())
 			if rerr == nil {
 				rerr = saveOnErr
+			} else {
+				slog.Error("save-on failed after backup error, server may have autosave OFF", "server", serverName, "backup_error", rerr)
 			}
 		}
 	}()
