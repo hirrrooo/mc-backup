@@ -114,3 +114,22 @@ rcon_password = "filepass"
 		t.Errorf("RconPassword: got %q, want envpass", cfg.Servers["creative"].RconPassword)
 	}
 }
+
+func TestEnvOverrideCaseInsensitiveServerName(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	content := []byte(`
+[server.Creative]
+enabled = false
+rcon_password = "filepass"
+`)
+	os.WriteFile(cfgPath, content, 0644)
+	t.Setenv("MC_BACKUP_SERVER_CREATIVE_RCON_PASSWORD", "envpass")
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Servers["creative"].RconPassword != "envpass" {
+		t.Errorf("case-insensitive override failed: got %q", cfg.Servers["creative"].RconPassword)
+	}
+}

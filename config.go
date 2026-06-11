@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,6 +87,12 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 
+	normalized := make(map[string]ServerConfig, len(cfg.Servers))
+	for k, v := range cfg.Servers {
+		normalized[strings.ToLower(k)] = v
+	}
+	cfg.Servers = normalized
+
 	applyEnvOverrides(cfg)
 	return cfg, nil
 }
@@ -120,9 +127,10 @@ func applyEnvOverrides(cfg *Config) {
 			setRetentionField(&cfg.Retention, key, val)
 		case "server":
 			if serverName != "" {
-				s := cfg.Servers[serverName]
-				setServerField(&s, key, val)
-				cfg.Servers[serverName] = s
+				if s, ok := cfg.Servers[serverName]; ok {
+					setServerField(&s, key, val)
+					cfg.Servers[serverName] = s
+				}
 			}
 		}
 	}
@@ -133,7 +141,9 @@ func setGlobalField(v *GlobalConfig, key, val string) {
 	case "listen_addr":
 		v.ListenAddr = val
 	case "max_mbps":
-		fmt.Sscanf(val, "%f", &v.MaxMBps)
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			v.MaxMBps = f
+		}
 	case "backup_interval":
 		d, err := time.ParseDuration(val)
 		if err == nil {
@@ -154,7 +164,9 @@ func setNASField(v *NASConfig, key, val string) {
 	case "ssh_host":
 		v.SSHHost = val
 	case "ssh_port":
-		fmt.Sscanf(val, "%d", &v.SSHPort)
+		if i, err := strconv.Atoi(val); err == nil {
+			v.SSHPort = i
+		}
 	case "ssh_key":
 		v.SSHKey = val
 	case "dest_root":
@@ -165,9 +177,13 @@ func setNASField(v *NASConfig, key, val string) {
 func setRetentionField(v *RetentionConfig, key, val string) {
 	switch key {
 	case "prune_days":
-		fmt.Sscanf(val, "%d", &v.PruneDays)
+		if i, err := strconv.Atoi(val); err == nil {
+			v.PruneDays = i
+		}
 	case "prune_count":
-		fmt.Sscanf(val, "%d", &v.PruneCount)
+		if i, err := strconv.Atoi(val); err == nil {
+			v.PruneCount = i
+		}
 	}
 }
 
