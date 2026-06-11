@@ -46,6 +46,7 @@ func (d *Daemon) waitForContainers(ctx context.Context, cfg *Config) {
 
 	for {
 		allReady := true
+		anyCheckable := false
 		for _, s := range servers {
 			container := s.Server.ContainerName
 			if container == "" {
@@ -53,20 +54,25 @@ func (d *Daemon) waitForContainers(ctx context.Context, cfg *Config) {
 			}
 			uptime, err := containerUptime(container)
 			if err != nil {
-				slog.Warn("cannot check container uptime, falling back to initial_delay",
+				slog.Warn("cannot check container uptime, skipping readiness check",
 					"server", s.Name, "container", container, "error", err)
-				select {
-				case <-time.After(cfg.Global.InitialDelay.Duration):
-				case <-ctx.Done():
-				}
-				return
+				continue
 			}
+			anyCheckable = true
 			if uptime < cfg.Global.InitialDelay.Duration {
 				remaining := cfg.Global.InitialDelay.Duration - uptime
 				slog.Info("container started recently, waiting",
 					"server", s.Name, "uptime", uptime.Round(time.Second), "remaining", remaining.Round(time.Second))
 				allReady = false
 			}
+		}
+		if !anyCheckable {
+			slog.Warn("no containers reachable, falling back to initial_delay")
+			select {
+			case <-time.After(cfg.Global.InitialDelay.Duration):
+			case <-ctx.Done():
+			}
+			return
 		}
 		if allReady {
 			slog.Info("all containers ready")

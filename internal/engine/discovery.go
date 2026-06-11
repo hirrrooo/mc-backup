@@ -115,7 +115,7 @@ func discoverServers(watches []WatchConfig, cfg *Config) []struct {
 			continue
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
 			name := e.Name()
