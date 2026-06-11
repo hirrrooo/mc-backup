@@ -32,7 +32,7 @@ func localRsyncArgs(dataDir, prevBackup, destDir string, excludes []string) []st
 	for _, ex := range excludes {
 		args = append(args, fmt.Sprintf("--exclude=%s", ex))
 	}
-	args = append(args, dataDir+"/", destDir+"/")
+	args = append(args, dataDir, destDir+"/")
 	return args
 }
 
@@ -50,7 +50,7 @@ func nasRsyncArgs(dataDir, prevBackup, destDir string, nas NASConfig, maxMbps fl
 	}
 	sshArgs := sshBaseArgs(nas)
 	args = append(args, "-e", strings.Join(sshArgs, " "))
-	args = append(args, dataDir+"/", fmt.Sprintf("%s:%s/", sshRemote, destDir))
+	args = append(args, dataDir, fmt.Sprintf("%s:%s/", sshRemote, destDir))
 	return args
 }
 

@@ -17,7 +17,7 @@ func TestLocalRsyncArgs(t *testing.T) {
 		if strings.HasPrefix(a, "--link-dest=") {
 			hasLinkDest = true
 		}
-		if strings.HasSuffix(a, "/opt/mc/data/") {
+		if a == "/opt/mc/data" {
 			hasSrc = true
 		}
 		if strings.HasSuffix(a, "/backups/mc/20250611-1200/") {
