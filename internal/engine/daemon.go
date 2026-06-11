@@ -2,9 +2,12 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -103,6 +106,55 @@ func (d *Daemon) Cancel() {
 	}
 }
 
+func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
+	stored := readLastSnapshots(d.cfgPath)
+	servers, _ := discoverServers(cfg.Watch, cfg.Servers)
+
+	for _, s := range servers {
+		if _, ok := stored[s.Name]; ok {
+			continue
+		}
+
+		var latestLocal, latestNAS string
+		var latestTime time.Time
+
+		backupDir := s.Watch.backupDir(s.Name)
+		if entries, err := os.ReadDir(backupDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() && isBackupDir(e.Name()) {
+					if info, err := e.Info(); err == nil && info.ModTime().After(latestTime) {
+						latestTime = info.ModTime()
+						latestLocal = filepath.Join(backupDir, e.Name())
+					}
+				}
+			}
+		}
+
+		nasDir := fmt.Sprintf("%s/%s/%s", cfg.NAS.DestRoot, s.Watch.Namespace, s.Name)
+		nasArgs := sshBaseArgs(cfg.NAS)
+		nasArgs = append(nasArgs,
+			fmt.Sprintf("%s@%s", cfg.NAS.SSHUser, cfg.NAS.SSHHost),
+			fmt.Sprintf("ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | head -1", nasDir),
+		)
+		cmd := exec.CommandContext(ctx, nasArgs[0], nasArgs[1:]...)
+		if out, err := cmd.Output(); err == nil {
+			nasSnap := strings.TrimSpace(string(out))
+			if nasSnap != "" {
+				latestNAS = nasDir + "/" + filepath.Base(nasSnap)
+			}
+		}
+
+		if latestLocal != "" || latestNAS != "" {
+			if latestTime.IsZero() {
+				latestTime = time.Now()
+			}
+			writeLastSnapshot(d.cfgPath, s.Name, latestLocal, latestNAS)
+			slog.Info("discovered existing snapshot",
+				"server", s.Name, "local", latestLocal, "nas", latestNAS)
+		}
+	}
+}
+
 func (d *Daemon) saveAutoServers(cfg *Config) {
 	auto := make(map[string]ServerConfig)
 	for name := range d.autoServers {
@@ -142,6 +194,8 @@ func (d *Daemon) Run() error {
 	)
 
 	d.waitForContainers(ctx, cfg)
+
+	d.discoverSnapshots(ctx, cfg)
 
 	snapshots := readLastSnapshots(d.cfgPath)
 	for name, snap := range snapshots {
