@@ -146,11 +146,12 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 		}
 
 		if latestLocal != "" || latestNAS != "" {
-			t := time.Now()
-			if latestLocal != "" {
-				if info, err := os.Stat(latestLocal); err == nil {
-					t = info.ModTime()
-				}
+			t := snapshotTime(latestLocal)
+			if t.IsZero() {
+				t = snapshotTime(filepath.Base(latestNAS))
+			}
+			if t.IsZero() {
+				t = time.Now()
 			}
 			writeLastSnapshotAt(d.cfgPath, s.Name, latestLocal, latestNAS, t)
 			slog.Info("discovered existing snapshot",
@@ -257,6 +258,18 @@ func (d *Daemon) Run() error {
 			d.runDiscovery(ctx)
 		}
 	}
+}
+
+func snapshotTime(path string) time.Time {
+	name := filepath.Base(path)
+	if len(name) != 13 || name[8] != '-' {
+		return time.Time{}
+	}
+	t, err := time.ParseInLocation("20060102-1504", name, time.Local)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 func watchKey(cfg *Config, serverName string) string {
