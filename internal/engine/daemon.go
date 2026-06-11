@@ -142,13 +142,18 @@ func (d *Daemon) Run() error {
 
 	d.waitForContainers(ctx, cfg)
 
-	last := readLastBackup(d.cfgPath)
-	elapsed := time.Since(last)
-	if elapsed < cfg.Global.BackupInterval.Duration {
-		slog.Info("skipping initial backup, last backup was recent",
-			"elapsed", elapsed.Round(time.Second),
-			"interval", cfg.Global.BackupInterval.Duration,
-		)
+	lastBackups := readLastBackup(d.cfgPath)
+	allRecent := true
+	servers, _ := discoverServers(cfg.Watch, cfg.Servers)
+	for _, s := range servers {
+		if s.Server.Enabled && time.Since(lastBackups[s.Name]) < cfg.Global.BackupInterval.Duration {
+			continue
+		}
+		allRecent = false
+		break
+	}
+	if allRecent && len(servers) > 0 && len(lastBackups) > 0 {
+		slog.Info("skipping initial backup, all servers backed up within interval")
 	} else {
 		d.runBackupCycle(ctx, "")
 	}
@@ -271,6 +276,8 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 		d.lastBackups[key] = prev
 		d.jobTracker.Remove(key)
 
+		writeLastBackup(d.cfgPath, s.Name)
+
 		pruneLocalByCount(
 			s.Watch.backupDir(s.Name),
 			s.Watch.LocalKeep,
@@ -283,8 +290,6 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 		pruneNASByDays(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneDays)
 		pruneNASByCount(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneCount)
 	}
-
-	writeLastBackup(d.cfgPath)
 }
 
 func (d *Daemon) runDiscovery(ctx context.Context) {

@@ -493,19 +493,39 @@ func lastBackupPath(cfgPath string) string {
 	return filepath.Join(filepath.Dir(cfgPath), ".last-backup")
 }
 
-func readLastBackup(cfgPath string) time.Time {
+func readLastBackup(cfgPath string) map[string]time.Time {
+	m := make(map[string]time.Time)
 	data, err := os.ReadFile(lastBackupPath(cfgPath))
 	if err != nil {
-		return time.Time{}
+		return m
 	}
-	ts, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-	if err != nil {
-		return time.Time{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		ts, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		m[parts[0]] = time.Unix(ts, 0)
 	}
-	return time.Unix(ts, 0)
+	return m
 }
 
-func writeLastBackup(cfgPath string) {
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-	os.WriteFile(lastBackupPath(cfgPath), []byte(ts), 0644)
+func writeLastBackup(cfgPath string, server string) {
+	m := readLastBackup(cfgPath)
+	m[server] = time.Now()
+	f, err := os.Create(lastBackupPath(cfgPath))
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	for name, ts := range m {
+		fmt.Fprintf(f, "%s=%d\n", name, ts.Unix())
+	}
 }
