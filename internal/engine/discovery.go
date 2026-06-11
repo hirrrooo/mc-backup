@@ -170,11 +170,6 @@ func discoverServers(watches []WatchConfig, knownServers map[string]ServerConfig
 				Name   string
 				Server ServerConfig
 			}{Watch: w, Name: name, Server: newServer})
-			results = append(results, struct {
-				Watch  WatchConfig
-				Name   string
-				Server ServerConfig
-			}{Watch: w, Name: name, Server: newServer})
 		}
 	}
 	return results, newServers

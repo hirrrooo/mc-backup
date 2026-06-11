@@ -187,11 +187,12 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 	cfg := d.ac.Load()
 	servers, newServers := discoverServers(cfg.Watch, cfg.Servers)
 
-	for _, ns := range newServers {
-		d.autoServers[ns.Name] = true
-		cfg.Servers[ns.Name] = ns.Server
-	}
 	if len(newServers) > 0 {
+		cfg.Servers = copyServers(cfg.Servers)
+		for _, ns := range newServers {
+			d.autoServers[ns.Name] = true
+			cfg.Servers[ns.Name] = ns.Server
+		}
 		d.saveAutoServers(cfg)
 		slog.Info("auto-provisioned new servers in backup cycle")
 	}
@@ -279,12 +280,12 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 	cfg := d.ac.Load()
 	_, newServers := discoverServers(cfg.Watch, cfg.Servers)
 
-	for _, ns := range newServers {
-		d.autoServers[ns.Name] = true
-		cfg.Servers[ns.Name] = ns.Server
-	}
-
 	if len(newServers) > 0 {
+		cfg.Servers = copyServers(cfg.Servers)
+		for _, ns := range newServers {
+			d.autoServers[ns.Name] = true
+			cfg.Servers[ns.Name] = ns.Server
+		}
 		d.saveAutoServers(cfg)
 		slog.Info("new servers discovered, triggering immediate backup cycle")
 		go d.runBackupCycle(ctx, "")

@@ -136,6 +136,14 @@ func autoServersPath(cfgPath string) string {
 	return strings.TrimSuffix(cfgPath, ".toml") + "-auto.toml"
 }
 
+func copyServers(src map[string]ServerConfig) map[string]ServerConfig {
+	dst := make(map[string]ServerConfig, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
 func loadAutoServerNames(cfgPath string) map[string]bool {
 	names := make(map[string]bool)
 	autoPath := autoServersPath(cfgPath)
@@ -329,7 +337,7 @@ func watchConfig(path string, ac *atomicConfig) error {
 				if name != base && name != autoBase {
 					continue
 				}
-			if event.Op&fsnotify.Write == 0 && event.Op&fsnotify.Create == 0 {
+				if event.Op&fsnotify.Write == 0 && event.Op&fsnotify.Create == 0 {
 				continue
 			}
 			slog.Info("config file changed, reloading", "path", path)
