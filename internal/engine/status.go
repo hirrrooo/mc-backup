@@ -51,7 +51,7 @@ func (jt *JobTracker) Snapshot() map[string]*JobInfo {
 	return snap
 }
 
-func startStatusServer(addr string, jt *JobTracker, onCancel func(), onScan func()) {
+func startStatusServer(addr string, jt *JobTracker, onCancel func(), onScan func(), onBackup func()) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -78,6 +78,15 @@ func startStatusServer(addr string, jt *JobTracker, onCancel func(), onScan func
 		go onScan()
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("scan triggered"))
+	})
+	mux.HandleFunc("/backup", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		go onBackup()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("backup triggered"))
 	})
 
 	go func() {

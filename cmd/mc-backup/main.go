@@ -76,6 +76,7 @@ Environment overrides: MC_BACKUP_<SECTION>_<KEY> (e.g. MC_BACKUP_GLOBAL_MAX_MBPS
 
 Server discovery: drops a directory under a watch path — auto-provisioned within 1 min.
   curl -X POST http://localhost:47990/scan   triggers immediate discovery
+  curl -X POST http://localhost:47990/backup runs a backup cycle on demand
   curl -X POST http://localhost:47990/cancel aborts the current backup cycle
   curl http://localhost:47990/status         JSON job status
 
