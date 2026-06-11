@@ -16,6 +16,7 @@ install: build
 	install -m 755 $(BINARY) $(DESTDIR)$(BINDIR)/$(BINARY)
 	install -m 644 config.example.toml $(DESTDIR)$(CONFDIR)/config.toml 2>/dev/null || true
 	install -m 644 mc-backup.service $(DESTDIR)$(SERVICEDIR)/mc-backup.service
+	install -d ${HOME}/.config/mc-backup
 	systemctl daemon-reload
 	systemctl enable mc-backup
 
