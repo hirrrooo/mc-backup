@@ -57,7 +57,7 @@ cd mc-backup
 sudo make install
 ```
 
-This builds the binary, installs it to `/usr/local/bin/mc-backup`, places the systemd unit at `/etc/systemd/system/mc-backup.service`, copies the example config to `/etc/mc-backup/config.toml`, and enables the service.
+This builds the binary, installs it to `/usr/local/bin/mc-backup`, places the systemd unit at `/etc/systemd/system/mc-backup.service`, copies the example config to `~/.config/mc-backup/config.toml` (primary) and `/etc/mc-backup/config.toml` (fallback — neither overwrites an existing file), and enables the service.
 
 ### Manual Install
 
