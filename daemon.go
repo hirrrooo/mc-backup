@@ -56,25 +56,29 @@ func (d *Daemon) Run() error {
 
 	d.runBackupCycle(ctx)
 
+	backupTicker := time.NewTicker(cfg.Global.BackupInterval.Duration)
+	defer backupTicker.Stop()
+
 	discoveryTicker := time.NewTicker(1 * time.Minute)
 	defer discoveryTicker.Stop()
 
 	for {
-		cfg := d.ac.Load()
 		select {
 		case <-ctx.Done():
 			slog.Info("daemon shutting down")
 			return ctx.Err()
-		case <-backupTimer(cfg.Global.BackupInterval.Duration):
+		case <-backupTicker.C:
 			d.runBackupCycle(ctx)
+			newCfg := d.ac.Load()
+			newInterval := newCfg.Global.BackupInterval.Duration
+			if newInterval != cfg.Global.BackupInterval.Duration {
+				backupTicker.Reset(newInterval)
+				cfg = newCfg
+			}
 		case <-discoveryTicker.C:
 			d.runDiscovery(ctx)
 		}
 	}
-}
-
-func backupTimer(interval time.Duration) <-chan time.Time {
-	return time.After(interval)
 }
 
 func (d *Daemon) runBackupCycle(ctx context.Context) {

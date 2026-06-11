@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"log/slog"
 )
@@ -23,7 +22,7 @@ func pruneLocalByCount(localPath, prefix string, keep int) {
 	}
 	var dirs []string
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), prefix+"-") {
+		if e.IsDir() && isBackupDir(e.Name()) {
 			dirs = append(dirs, e.Name())
 		}
 	}

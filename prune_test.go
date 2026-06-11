@@ -8,7 +8,7 @@ import (
 
 func TestPruneLocalByCount(t *testing.T) {
 	tmp := t.TempDir()
-	dirs := []string{"server-20250611-1000", "server-20250611-1100", "server-20250611-1200", "server-20250611-1300", "server-20250611-1400"}
+	dirs := []string{"20250611-1000", "20250611-1100", "20250611-1200", "20250611-1300", "20250611-1400"}
 	for _, d := range dirs {
 		os.Mkdir(filepath.Join(tmp, d), 0755)
 	}

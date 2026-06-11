@@ -127,7 +127,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 		detachedCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if err := runRcon(detachedCtx, container, server.RconPassword, "save-on", rconRetries, rconRetryInterval); err != nil {
-			saveOnErr := fmt.Errorf("FATAL: save-on failed after backup for %s: %w", serverName, err)
+			saveOnErr := fmt.Errorf("FATAL: save-on failed for %s: %w", serverName, err)
 			slog.Error(saveOnErr.Error())
 			if rerr == nil {
 				rerr = saveOnErr
