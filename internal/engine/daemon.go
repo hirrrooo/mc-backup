@@ -143,17 +143,22 @@ func (d *Daemon) Run() error {
 	d.waitForContainers(ctx, cfg)
 
 	lastBackups := readLastBackup(d.cfgPath)
-	allRecent := true
+	var recent, due []string
 	servers, _ := discoverServers(cfg.Watch, cfg.Servers)
 	for _, s := range servers {
 		if s.Server.Enabled && time.Since(lastBackups[s.Name]) < cfg.Global.BackupInterval.Duration {
-			continue
+			recent = append(recent, s.Name)
+		} else {
+			due = append(due, s.Name)
 		}
-		allRecent = false
-		break
 	}
-	if allRecent && len(servers) > 0 && len(lastBackups) > 0 {
-		slog.Info("skipping initial backup, all servers backed up within interval")
+	if len(due) == 0 && len(recent) > 0 {
+		slog.Info("skipping initial backup, all servers backed up within interval",
+			"recent", recent, "interval", cfg.Global.BackupInterval.Duration)
+	} else if len(due) > 0 {
+		slog.Info("running initial backup for servers past interval",
+			"due", due, "recent", recent)
+		d.runBackupCycle(ctx, "")
 	} else {
 		d.runBackupCycle(ctx, "")
 	}
@@ -183,6 +188,18 @@ func (d *Daemon) Run() error {
 	}
 }
 
+func serverNames(servers []struct {
+	Watch  WatchConfig
+	Name   string
+	Server ServerConfig
+}) []string {
+	names := make([]string, len(servers))
+	for i, s := range servers {
+		names[i] = s.Name
+	}
+	return names
+}
+
 func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 	d.cycleMu.Lock()
 	defer d.cycleMu.Unlock()
@@ -200,6 +217,15 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 
 	cfg := d.ac.Load()
 	servers, newServers := discoverServers(cfg.Watch, cfg.Servers)
+
+	if onlyServer == "" {
+		slog.Info("backup cycle starting",
+			"servers", serverNames(servers),
+		)
+	} else {
+		slog.Info("backup cycle starting", "server", onlyServer)
+	}
+	startTime := time.Now()
 
 	if len(newServers) > 0 {
 		cfg = cloneConfig(cfg)
@@ -290,6 +316,8 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 		pruneNASByDays(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneDays)
 		pruneNASByCount(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneCount)
 	}
+
+	slog.Info("backup cycle complete", "duration", time.Since(startTime).Round(time.Second))
 }
 
 func (d *Daemon) runDiscovery(ctx context.Context) {
