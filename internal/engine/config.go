@@ -522,8 +522,12 @@ func readLastSnapshots(cfgPath string) map[string]lastSnapshotEntry {
 }
 
 func writeLastSnapshot(cfgPath, server, localPath, nasPath string) {
+	writeLastSnapshotAt(cfgPath, server, localPath, nasPath, time.Now())
+}
+
+func writeLastSnapshotAt(cfgPath, server, localPath, nasPath string, t time.Time) {
 	m := readLastSnapshots(cfgPath)
-	m[server] = lastSnapshotEntry{Time: time.Now(), Local: localPath, NAS: nasPath}
+	m[server] = lastSnapshotEntry{Time: t, Local: localPath, NAS: nasPath}
 	f, err := os.Create(lastBackupPath(cfgPath))
 	if err != nil {
 		return

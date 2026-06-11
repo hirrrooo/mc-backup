@@ -146,7 +146,13 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 		}
 
 		if latestLocal != "" || latestNAS != "" {
-			writeLastSnapshot(d.cfgPath, s.Name, latestLocal, latestNAS)
+			t := time.Now()
+			if latestLocal != "" {
+				if info, err := os.Stat(latestLocal); err == nil {
+					t = info.ModTime()
+				}
+			}
+			writeLastSnapshotAt(d.cfgPath, s.Name, latestLocal, latestNAS, t)
 			slog.Info("discovered existing snapshot",
 				"server", s.Name, "local", latestLocal, "nas", latestNAS)
 		}
