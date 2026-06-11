@@ -116,7 +116,7 @@ func NewBackupEngine(cfg Config) *BackupEngine {
 func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, serverName string, server ServerConfig, prevLocalBackup, prevNASBackup string) (destPath string, usedSSH bool, rerr error) {
 	dataDir := server.DataDir
 	if dataDir == "" {
-		dataDir = filepath.Join(watch.Path, serverName)
+		dataDir = filepath.Join(watch.Path, serverName, "mc-data")
 	}
 	excludes := []string{"*.jar", "cache", "logs", "*.tmp"}
 

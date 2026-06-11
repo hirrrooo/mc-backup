@@ -183,6 +183,7 @@ func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 		fmt.Fprintf(f, "ssh_only = %v\n", s.SSHOnly)
 		fmt.Fprintf(f, "container_name = %q\n", s.ContainerName)
 		fmt.Fprintf(f, "rcon_password = %q\n", s.RconPassword)
+		fmt.Fprintf(f, "# defaults to <watch.path>/<server>/mc-data if empty\n")
 		fmt.Fprintf(f, "data_dir = %q\n", s.DataDir)
 		fmt.Fprintf(f, "pause_if_no_players = %v\n", s.PauseIfNoPlayers)
 	}
