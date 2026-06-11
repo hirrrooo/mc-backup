@@ -76,7 +76,9 @@ func (d *Daemon) Run() error {
 		return ctx.Err()
 	}
 
-	d.runBackupCycle(ctx)
+	cycleCtx, cycleCancel := d.cycleContext(ctx)
+	d.runBackupCycle(cycleCtx)
+	cycleCancel()
 
 	backupTicker := time.NewTicker(cfg.Global.BackupInterval.Duration)
 	defer backupTicker.Stop()
@@ -90,8 +92,9 @@ func (d *Daemon) Run() error {
 			slog.Info("daemon shutting down")
 			return ctx.Err()
 		case <-backupTicker.C:
-			cycleCtx, _ := d.cycleContext(ctx)
+			cycleCtx, cycleCancel := d.cycleContext(ctx)
 			d.runBackupCycle(cycleCtx)
+			cycleCancel()
 			newCfg := d.ac.Load()
 			newInterval := newCfg.Global.BackupInterval.Duration
 			if newInterval != cfg.Global.BackupInterval.Duration {
@@ -211,6 +214,10 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 			slog.Error("failed to save auto-provisioned config", "error", err)
 		}
 		slog.Info("new servers discovered, triggering immediate backup cycle")
-		go d.runBackupCycle(ctx)
+		cycleCtx, cycleCancel := d.cycleContext(ctx)
+		go func() {
+			defer cycleCancel()
+			d.runBackupCycle(cycleCtx)
+		}()
 	}
 }
