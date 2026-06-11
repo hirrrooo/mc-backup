@@ -86,7 +86,7 @@ func (ae *ArchiveEngine) migrateOne(ctx context.Context, watch WatchConfig, serv
 	args := nasRsyncArgs(localSrc, "", nasDest, ae.cfg.NAS, ae.cfg.Global.MaxMBps, nil)
 
 	slog.Info("archiving to NAS", "server", serverName, "snapshot", snapshot)
-	if err := runRsync(ctx, args); err != nil {
+	if err := runRsync(ctx, args, nil); err != nil {
 		slog.Error("archive: NAS rsync failed", "snapshot", snapshot, "error", err)
 		return
 	}

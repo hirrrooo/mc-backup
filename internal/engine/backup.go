@@ -1,11 +1,14 @@
 package engine
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,11 +57,33 @@ func nasRsyncArgs(dataDir, prevBackup, destDir string, nas NASConfig, maxMbps fl
 	return args
 }
 
-func runRsync(ctx context.Context, args []string) error {
+func runRsync(ctx context.Context, args []string, onProgress func(bytesMoved int64)) error {
+	if onProgress != nil {
+		newArgs := make([]string, 0, len(args)+1)
+		newArgs = append(newArgs, args[0], args[1])
+		newArgs = append(newArgs, "--info=progress2")
+		newArgs = append(newArgs, args[2:]...)
+		args = newArgs
+	}
+
+	slog.Debug("running rsync", "args", args)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+
+	if onProgress != nil {
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		go streamRsyncProgress(stdout, onProgress)
+		return cmd.Wait()
+	}
+
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	slog.Debug("running rsync", "args", args)
 	return cmd.Run()
 }
 
@@ -179,7 +204,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 			return "", false, fmt.Errorf("create NAS dir: %w", err)
 		}
 		args := nasRsyncArgs(dataDir, prevNASBackup, destDir, be.cfg.NAS, be.cfg.Global.MaxMBps, excludes)
-		if err := runRsync(ctx, args); err != nil {
+		if err := runRsync(ctx, args, nil); err != nil {
 			return "", false, fmt.Errorf("NAS rsync: %w", err)
 		}
 		destPath = destDir
@@ -190,11 +215,50 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 			return "", false, fmt.Errorf("mkdir: %w", err)
 		}
 		args := localRsyncArgs(dataDir, prevLocalBackup, destPath, excludes)
-		if err := runRsync(ctx, args); err != nil {
+		if err := runRsync(ctx, args, nil); err != nil {
 			return "", false, fmt.Errorf("local rsync: %w", err)
 		}
 	}
 
 	slog.Info("backup complete", "server", serverName, "dest", destPath, "ssh_only", useSSH)
 	return destPath, useSSH, nil
+}
+
+func parseRsyncProgress(line string) (int64, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return 0, false
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return 0, false
+	}
+	cleaned := strings.ReplaceAll(fields[0], ",", "")
+	n, err := strconv.ParseInt(cleaned, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func scanRsyncLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	for i, b := range data {
+		if b == '\r' || b == '\n' {
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+func streamRsyncProgress(r io.Reader, onProgress func(bytesMoved int64)) {
+	scanner := bufio.NewScanner(r)
+	scanner.Split(scanRsyncLines)
+	for scanner.Scan() {
+		if bytes, ok := parseRsyncProgress(scanner.Text()); ok {
+			onProgress(bytes)
+		}
+	}
 }

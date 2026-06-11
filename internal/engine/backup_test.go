@@ -64,3 +64,27 @@ func TestNoLinkDestFirstRun(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRsyncProgress(t *testing.T) {
+	tests := []struct {
+		line     string
+		expected int64
+		ok       bool
+	}{
+		{"    1,048,576  50%   10.00MB/s    0:00:05 (xfr#5, to-chk=50/100)", 1048576, true},
+		{"       32768   0%    0.00kB/s    0:00:00 (xfr#1, to-chk=99/100)", 32768, true},
+		{"  2,147,483,648 100%   40.00MB/s    0:01:30 (xfr#100, to-chk=0/100)", 2147483648, true},
+		{"Sent 1,048,576 bytes  Received 500 bytes  10,240,000 bytes/sec", 0, false},
+		{"total size is 2,048,000  speedup is 2.00", 0, false},
+		{"", 0, false},
+		{"   some random text", 0, false},
+	}
+
+	for _, tt := range tests {
+		bytes, ok := parseRsyncProgress(tt.line)
+		if ok != tt.ok || bytes != tt.expected {
+			t.Errorf("parseRsyncProgress(%q) = (%d, %v), want (%d, %v)",
+				tt.line, bytes, ok, tt.expected, tt.ok)
+		}
+	}
+}
