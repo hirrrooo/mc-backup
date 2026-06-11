@@ -31,7 +31,6 @@ prune_count = 0
 [[watch]]
 path = "/opt/mc/docker/servers"
 namespace = "minecraft"
-local_path = "/opt/mc/backups"
 local_keep = 3
 max_disk_pct = 90
 

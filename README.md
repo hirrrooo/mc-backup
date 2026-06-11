@@ -92,7 +92,6 @@ dest_root = "/volume1/backups"  # NAS directory for backups
 [[watch]]
 path = "/opt/minecraft/servers/docker/servers"   # directory containing per-server subdirs
 namespace = "minecraft"                          # used for NAS subfolder naming
-local_path = "/opt/minecraft/backups"            # local SSD backup directory
 ```
 
 ### Full Reference
@@ -118,7 +117,6 @@ prune_count = 0                   # keep only N most recent NAS backups (0 = dis
 [[watch]]
 path = "/opt/minecraft/servers/docker/servers"   # watched directory
 namespace = "minecraft"                          # namespace for NAS path: <dest_root>/<namespace>/<server>/
-local_path = "/opt/minecraft/backups"            # local SSD backup root
 local_keep = 3                  # number of recent snapshots to keep on SSD
 max_disk_pct = 90               # archive to NAS when SSD usage exceeds this %
 ```

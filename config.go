@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -48,9 +49,12 @@ type RetentionConfig struct {
 type WatchConfig struct {
 	Path       string `toml:"path"`
 	Namespace  string `toml:"namespace"`
-	LocalPath  string `toml:"local_path"`
 	LocalKeep  int    `toml:"local_keep"`
 	MaxDiskPct int    `toml:"max_disk_pct"`
+}
+
+func (w WatchConfig) backupDir(serverName string) string {
+	return filepath.Join(w.Path, serverName, "backups")
 }
 
 type ServerConfig struct {

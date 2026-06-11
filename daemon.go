@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -122,7 +121,7 @@ func (d *Daemon) runBackupCycle(ctx context.Context) {
 		d.jobTracker.Remove(key)
 
 		pruneLocalByCount(
-			filepath.Join(s.Watch.LocalPath, s.Watch.Namespace, s.Name),
+			s.Watch.backupDir(s.Name),
 			s.Name,
 			s.Watch.LocalKeep,
 		)

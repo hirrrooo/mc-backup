@@ -147,9 +147,10 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 
 	useSSH := server.SSHOnly
 	if !useSSH {
-		if pct, err := diskUsagePct(watch.LocalPath); err == nil {
+		backupDir := watch.backupDir(serverName)
+		if pct, err := diskUsagePct(backupDir); err == nil {
 			estSize, _ := dirSize(dataDir)
-			totalSpace := totalDiskSpace(watch.LocalPath)
+			totalSpace := totalDiskSpace(backupDir)
 			if totalSpace > 0 {
 				neededPct := (float64(estSize) / float64(totalSpace)) * 100.0
 				if freePct := 100.0 - pct; freePct-neededPct < float64(100-watch.MaxDiskPct) {
@@ -172,8 +173,8 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 		}
 		destPath = destDir
 	} else {
-		destDir := filepath.Join(watch.LocalPath, watch.Namespace, serverName)
-		destPath = filepath.Join(destDir, ts)
+		backupDir := watch.backupDir(serverName)
+		destPath = filepath.Join(backupDir, ts)
 		var prevLocal string
 		if prevBackupPath != "" {
 			prevLocal = prevBackupPath

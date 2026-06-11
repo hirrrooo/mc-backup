@@ -22,17 +22,17 @@ func NewArchiveEngine(cfg Config) *ArchiveEngine {
 }
 
 func (ae *ArchiveEngine) ArchiveIfNeeded(ctx context.Context, watch WatchConfig, serverName string) {
-	pct, err := diskUsagePct(watch.LocalPath)
+	backupDir := watch.backupDir(serverName)
+	pct, err := diskUsagePct(backupDir)
 	if err != nil {
-		slog.Warn("archive: cannot check disk usage", "path", watch.LocalPath, "error", err)
+		slog.Warn("archive: cannot check disk usage", "path", backupDir, "error", err)
 		return
 	}
 	if pct < float64(watch.MaxDiskPct) {
 		return
 	}
 
-	localDir := filepath.Join(watch.LocalPath, watch.Namespace, serverName)
-	entries, err := os.ReadDir(localDir)
+	entries, err := os.ReadDir(backupDir)
 	if err != nil {
 		return
 	}
@@ -81,7 +81,7 @@ func (ae *ArchiveEngine) migrateOne(ctx context.Context, watch WatchConfig, serv
 		return
 	}
 
-	localSrc := filepath.Join(watch.LocalPath, watch.Namespace, serverName, snapshot)
+	localSrc := filepath.Join(watch.backupDir(serverName), snapshot)
 	nasDest := fmt.Sprintf("%s/%s/%s/%s", ae.cfg.NAS.DestRoot, watch.Namespace, serverName, snapshot)
 	args := nasRsyncArgs(localSrc, "", nasDest, ae.cfg.NAS, ae.cfg.Global.MaxMBps, nil)
 
