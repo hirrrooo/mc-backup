@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"log/slog"
 )
@@ -53,4 +55,97 @@ func runRsync(ctx context.Context, args []string) error {
 	cmd.Stderr = os.Stderr
 	slog.Debug("running rsync", "args", args)
 	return cmd.Run()
+}
+
+const rconRetries = 5
+const rconRetryInterval = 10 * time.Second
+
+type BackupEngine struct {
+	cfg Config
+}
+
+func NewBackupEngine(cfg Config) *BackupEngine {
+	return &BackupEngine{cfg: cfg}
+}
+
+func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, serverName string, server ServerConfig, prevBackupPath string) (string, error) {
+	dataDir := server.DataDir
+	if dataDir == "" {
+		dataDir = filepath.Join(watch.Path, serverName)
+	}
+	excludes := []string{"*.jar", "cache", "logs", "*.tmp"}
+
+	container := server.ContainerName
+	if container == "" {
+		container = serverName + "-mc-1"
+	}
+
+	if err := runRcon(ctx, container, server.RconPassword, "save-off", rconRetries, rconRetryInterval); err != nil {
+		return "", fmt.Errorf("save-off: %w", err)
+	}
+
+	saveOnComplete := make(chan error, 1)
+	go func() {
+		defer close(saveOnComplete)
+		detachedCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		saveOnComplete <- runRcon(detachedCtx, container, server.RconPassword, "save-on", rconRetries, rconRetryInterval)
+	}()
+
+	defer func() {
+		err := <-saveOnComplete
+		if err != nil {
+			slog.Error("FATAL: save-on failed after backup", "server", serverName, "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	if err := runRcon(ctx, container, server.RconPassword, "save-all flush", rconRetries, rconRetryInterval); err != nil {
+		return "", fmt.Errorf("save-all flush: %w", err)
+	}
+
+	exec.Command("sync").Run()
+
+	ts := time.Now().Format("20060102-1504")
+
+	useSSH := server.SSHOnly
+	if !useSSH {
+		if pct, err := diskUsagePct(watch.LocalPath); err == nil {
+			estSize, _ := dirSize(dataDir)
+			freePct := 100.0 - pct
+			neededPct := (float64(estSize) / float64(totalDiskSpace(watch.LocalPath))) * 100.0
+			if freePct-neededPct < float64(100-watch.MaxDiskPct) {
+				slog.Info("SSD usage projected above threshold, routing to NAS",
+					"server", serverName, "current_pct", pct, "estimated_pct", pct+neededPct)
+				useSSH = true
+			}
+		}
+	}
+
+	var destPath string
+	if useSSH {
+		destDir := fmt.Sprintf("%s/%s/%s/%s", be.cfg.NAS.DestRoot, watch.Namespace, serverName, ts)
+		args := nasRsyncArgs(dataDir, prevBackupPath, destDir, be.cfg.NAS, be.cfg.Global.MaxMBps, excludes)
+		if err := runRsync(ctx, args); err != nil {
+			return "", fmt.Errorf("NAS rsync: %w", err)
+		}
+		destPath = destDir
+	} else {
+		destDir := filepath.Join(watch.LocalPath, watch.Namespace, serverName)
+		destPath = filepath.Join(destDir, ts)
+		var prevLocal string
+		if prevBackupPath != "" {
+			prevLocal = prevBackupPath
+		}
+		if err := os.MkdirAll(destPath, 0755); err != nil {
+			return "", fmt.Errorf("mkdir: %w", err)
+		}
+		args := localRsyncArgs(dataDir, prevLocal, destPath, excludes)
+		if err := runRsync(ctx, args); err != nil {
+			return "", fmt.Errorf("local rsync: %w", err)
+		}
+	}
+
+	slog.Info("backup complete", "server", serverName, "dest", destPath, "ssh_only", useSSH)
+	return destPath, nil
 }
