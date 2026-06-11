@@ -60,9 +60,8 @@ func nasRsyncArgs(dataDir, prevBackup, destDir string, nas NASConfig, maxMbps fl
 func runRsync(ctx context.Context, args []string, onProgress func(bytesMoved int64)) error {
 	if onProgress != nil {
 		newArgs := make([]string, 0, len(args)+1)
-		newArgs = append(newArgs, args[0], args[1])
-		newArgs = append(newArgs, "--info=progress2")
-		newArgs = append(newArgs, args[2:]...)
+		newArgs = append(newArgs, args[0], "--info=progress2")
+		newArgs = append(newArgs, args[1:]...)
 		args = newArgs
 	}
 
@@ -244,7 +243,11 @@ func parseRsyncProgress(line string) (int64, bool) {
 func scanRsyncLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	for i, b := range data {
 		if b == '\r' || b == '\n' {
-			return i + 1, data[:i], nil
+			adv := i + 1
+			if b == '\r' && i+1 < len(data) && data[i+1] == '\n' {
+				adv = i + 2
+			}
+			return adv, data[:i], nil
 		}
 	}
 	if atEOF && len(data) > 0 {
@@ -260,5 +263,8 @@ func streamRsyncProgress(r io.Reader, onProgress func(bytesMoved int64)) {
 		if bytes, ok := parseRsyncProgress(scanner.Text()); ok {
 			onProgress(bytes)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Warn("rsync progress scanner error", "error", err)
 	}
 }
