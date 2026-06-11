@@ -101,6 +101,8 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	cfg.Servers = normalized
 
+	cfg.NAS.DestRoot = strings.TrimRight(cfg.NAS.DestRoot, "/")
+
 	applyEnvOverrides(cfg)
 	return cfg, nil
 }
