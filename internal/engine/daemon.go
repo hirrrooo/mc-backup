@@ -197,11 +197,16 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 			continue
 		}
 
+		container := s.Server.ContainerName
+		if container == "" {
+			container = s.Name + "-mc-1"
+		}
+		if !containerRunning(container) {
+			slog.Info("container not running, skipping backup", "server", s.Name, "container", container)
+			continue
+		}
+
 		if s.Server.PauseIfNoPlayers {
-			container := s.Server.ContainerName
-			if container == "" {
-				container = s.Name + "-mc-1"
-			}
 			out, err := rconOutput(ctx, container, s.Server.RconPassword, "list")
 			if err != nil {
 				slog.Warn("cannot query player count, skipping backup", "server", s.Name, "error", err)

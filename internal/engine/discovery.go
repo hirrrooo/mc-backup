@@ -98,6 +98,15 @@ func containerUptime(container string) (time.Duration, error) {
 	return time.Since(t), nil
 }
 
+func containerRunning(container string) bool {
+	cmd := exec.Command("docker", "ps", "--filter", fmt.Sprintf("name=^/%s$", container), "--format", "{{.Names}}")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == container
+}
+
 func discoverServers(watches []WatchConfig, cfg *Config) []struct {
 	Watch  WatchConfig
 	Name   string
