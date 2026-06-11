@@ -51,7 +51,13 @@ func (jt *JobTracker) Snapshot() map[string]*JobInfo {
 	return snap
 }
 
-func startStatusServer(addr string, jt *JobTracker, onCancel func(), onScan func(), onBackup func()) {
+type StatusCallbacks struct {
+	OnCancel func()
+	OnScan   func()
+	OnBackup func(server string)
+}
+
+func startStatusServer(addr string, jt *JobTracker, callbacks StatusCallbacks) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -66,7 +72,7 @@ func startStatusServer(addr string, jt *JobTracker, onCancel func(), onScan func
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		onCancel()
+		callbacks.OnCancel()
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("canceled"))
 	})
@@ -75,7 +81,7 @@ func startStatusServer(addr string, jt *JobTracker, onCancel func(), onScan func
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		go onScan()
+		callbacks.OnScan()
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("scan triggered"))
 	})
@@ -84,7 +90,7 @@ func startStatusServer(addr string, jt *JobTracker, onCancel func(), onScan func
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		go onBackup()
+		callbacks.OnBackup(r.URL.Query().Get("server"))
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("backup triggered"))
 	})

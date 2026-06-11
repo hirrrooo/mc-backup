@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -43,11 +44,89 @@ func main() {
 		statusCmd()
 	case "config":
 		configCmd()
+	case "backup":
+		backupCmd()
+	case "scan":
+		postCmd("scan")
+	case "cancel":
+		postCmd("cancel")
 	case "version", "--version", "-v":
 		fmt.Printf("mc-backup %s\n", version)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		printUsage()
+		os.Exit(1)
+	}
+}
+
+func backupCmd() {
+	fs := flag.NewFlagSet("backup", flag.ExitOnError)
+	cfgPath := fs.String("config", findConfig(), "config file path")
+	fs.Parse(os.Args[2:])
+
+	cfg, err := engine.LoadConfig(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	server := fs.Arg(0)
+
+	url := fmt.Sprintf("http://%s/backup", cfg.Global.ListenAddr)
+	if server != "" {
+		url += "?server=" + server
+	}
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backup: %v\n", err)
+		os.Exit(1)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backup failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var buf [64]byte
+	n, _ := resp.Body.Read(buf[:])
+	fmt.Printf("backup: %s", buf[:n])
+}
+
+func postCmd(endpoint string) {
+	fs := flag.NewFlagSet(endpoint, flag.ExitOnError)
+	cfgPath := fs.String("config", findConfig(), "config file path")
+	fs.Parse(os.Args[2:])
+
+	cfg, err := engine.LoadConfig(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	url := fmt.Sprintf("http://%s/%s", cfg.Global.ListenAddr, endpoint)
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", endpoint, err)
+		os.Exit(1)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", endpoint, err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		var buf [64]byte
+		n, _ := resp.Body.Read(buf[:])
+		fmt.Printf("%s: %s\n", endpoint, buf[:n])
+	case resp.StatusCode == http.StatusMethodNotAllowed:
+		fmt.Fprintf(os.Stderr, "%s: daemon not responding to POST\n", endpoint)
+		os.Exit(1)
+	default:
+		fmt.Fprintf(os.Stderr, "%s: unexpected status %d\n", endpoint, resp.StatusCode)
 		os.Exit(1)
 	}
 }
@@ -60,6 +139,9 @@ Usage: mc-backup <command> [flags]
 Commands:
   run        Start the daemon (backup loop + status API)
   status     Show live backup/archive job dashboard
+  backup     Trigger an immediate backup cycle [server]
+  scan       Trigger immediate server discovery
+  cancel     Abort the current backup cycle
   config     Read or write config values
   version    Print version
 
@@ -73,12 +155,6 @@ config actions:
 
 Config files: /etc/mc-backup/config.toml, ~/.config/mc-backup/config.toml
 Environment overrides: MC_BACKUP_<SECTION>_<KEY> (e.g. MC_BACKUP_GLOBAL_MAX_MBPS=20)
-
-Server discovery: drops a directory under a watch path — auto-provisioned within 1 min.
-  curl -X POST http://localhost:47990/scan   triggers immediate discovery
-  curl -X POST http://localhost:47990/backup runs a backup cycle on demand
-  curl -X POST http://localhost:47990/cancel aborts the current backup cycle
-  curl http://localhost:47990/status         JSON job status
 
 `, version)
 }

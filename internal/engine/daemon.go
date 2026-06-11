@@ -24,6 +24,8 @@ type Daemon struct {
 	cycleMu     sync.Mutex
 	cancelMu    sync.Mutex
 	cancelFn    context.CancelFunc
+	backupGuard chan struct{}
+	scanGuard   chan struct{}
 	Debug       bool
 }
 
@@ -32,6 +34,8 @@ func NewDaemon(cfgPath string, cfg *Config) *Daemon {
 		cfgPath:     cfgPath,
 		jobTracker:  NewJobTracker(),
 		lastBackups: make(map[string]*lastBackup),
+		backupGuard: make(chan struct{}, 1),
+		scanGuard:   make(chan struct{}, 1),
 	}
 	d.ac.Store(cfg)
 	return d
@@ -44,7 +48,13 @@ func (d *Daemon) waitForContainers(ctx context.Context, cfg *Config) {
 		return
 	}
 
+	deadline := time.Now().Add(5 * cfg.Global.InitialDelay.Duration)
+
 	for {
+		if time.Now().After(deadline) {
+			slog.Warn("container readiness deadline exceeded, proceeding anyway")
+			return
+		}
 		allReady := true
 		anyCheckable := false
 		for _, s := range servers {
@@ -105,10 +115,30 @@ func (d *Daemon) Run() error {
 		slog.Warn("config watcher failed, live reload disabled", "error", err)
 	}
 
-	startStatusServer(cfg.Global.ListenAddr, d.jobTracker, d.Cancel, func() {
-		d.runDiscovery(ctx)
-	}, func() {
-		d.runBackupCycle(ctx)
+	startStatusServer(cfg.Global.ListenAddr, d.jobTracker, StatusCallbacks{
+		OnCancel: d.Cancel,
+		OnScan: func() {
+			select {
+			case d.scanGuard <- struct{}{}:
+				go func() {
+					defer func() { <-d.scanGuard }()
+					d.runDiscovery(ctx)
+				}()
+			default:
+				slog.Warn("scan already in progress, ignoring request")
+			}
+		},
+		OnBackup: func(server string) {
+			select {
+			case d.backupGuard <- struct{}{}:
+				go func() {
+					defer func() { <-d.backupGuard }()
+					d.runBackupCycle(ctx, server)
+				}()
+			default:
+				slog.Warn("backup already queued, ignoring request")
+			}
+		},
 	})
 
 	slog.Info("mc-backup daemon starting",
@@ -118,7 +148,7 @@ func (d *Daemon) Run() error {
 
 	d.waitForContainers(ctx, cfg)
 
-	d.runBackupCycle(ctx)
+	d.runBackupCycle(ctx, "")
 
 	backupTicker := time.NewTicker(cfg.Global.BackupInterval.Duration)
 	defer backupTicker.Stop()
@@ -132,7 +162,7 @@ func (d *Daemon) Run() error {
 			slog.Info("daemon shutting down")
 			return ctx.Err()
 		case <-backupTicker.C:
-			d.runBackupCycle(ctx)
+			d.runBackupCycle(ctx, "")
 			newCfg := d.ac.Load()
 			newInterval := newCfg.Global.BackupInterval.Duration
 			if newInterval != cfg.Global.BackupInterval.Duration {
@@ -145,7 +175,7 @@ func (d *Daemon) Run() error {
 	}
 }
 
-func (d *Daemon) runBackupCycle(parent context.Context) {
+func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 	d.cycleMu.Lock()
 	defer d.cycleMu.Unlock()
 
@@ -180,6 +210,10 @@ func (d *Daemon) runBackupCycle(parent context.Context) {
 		}
 
 		if !s.Server.Enabled {
+			continue
+		}
+
+		if onlyServer != "" && s.Name != onlyServer {
 			continue
 		}
 
@@ -263,6 +297,6 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 			slog.Error("failed to save auto-provisioned config", "error", err)
 		}
 		slog.Info("new servers discovered, triggering immediate backup cycle")
-		go d.runBackupCycle(ctx)
+		go d.runBackupCycle(ctx, "")
 	}
 }
