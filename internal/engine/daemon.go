@@ -99,7 +99,9 @@ func (d *Daemon) Run() error {
 		slog.Warn("config watcher failed, live reload disabled", "error", err)
 	}
 
-	startStatusServer(cfg.Global.ListenAddr, d.jobTracker, d.Cancel)
+	startStatusServer(cfg.Global.ListenAddr, d.jobTracker, d.Cancel, func() {
+		d.runDiscovery(context.Background())
+	})
 
 	slog.Info("mc-backup daemon starting",
 		"initial_delay", cfg.Global.InitialDelay.Duration,
