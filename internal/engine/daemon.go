@@ -210,5 +210,7 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 		if err := SaveConfig(d.cfgPath, cfg); err != nil {
 			slog.Error("failed to save auto-provisioned config", "error", err)
 		}
+		slog.Info("new servers discovered, triggering immediate backup cycle")
+		go d.runBackupCycle(ctx)
 	}
 }
