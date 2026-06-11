@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# from https://medium.com/@adrian.gheorghe.dev/using-docker-secrets-in-your-environment-variables-7a0609659aab#fb39
+# small change on collision we do not exit and let the file override the env var
+file_env() {
+   local var="$1"
+   local fileVar="${var}_FILE"
+   local def="${2:-}"
+
+   if [ "${!var:-}" ] && [ "${!fileVar:-}" ]; then
+      echo >&2 "error: both $var and $fileVar are set (but are exclusive)"
+   fi
+   local val="$def"
+   if [ "${!var:-}" ]; then
+      val="${!var}"
+   elif [ "${!fileVar:-}" ]; then
+      val="$(< "${!fileVar}")"
+   fi
+   export "$var"="$val"
+   unset "$fileVar"
+}
+
+# common env vars which we may want to set using the <env>_FILE used by [docker secrets](https://docs.docker.com/compose/use-secrets/)
+file_env "AWS_ACCESS_KEY_ID"
+file_env "AWS_SECRET_ACCESS_KEY"
+
+args=(/opt/entrypoint-demoter --match /backups)
+
+# if a cron schedule is set, configure and run crond in foreground
+if [[ -v CRON_SCHEDULE && "$1" == "loop" ]]; then
+  if [[ ! $EUID -eq 0 ]]; then
+    echo "Cron scheduling requires root user, use CRON_BACKUP_UID to run backup as non-root user"
+    exit 1
+  fi
+
+  if [[ -v CRON_BACKUP_UID ]]; then
+    # add 'backup' user if not already added
+    id -u backup &>/dev/null || adduser -DHu $CRON_BACKUP_UID backup
+    # non-root user cron job
+    echo "$CRON_SCHEDULE export ONE_SHOT=true; /opt/backup-loop.sh" | crontab -u backup -
+  else
+    # root cron job, but still uses entrypoint-demoter
+    echo "$CRON_SCHEDULE export ONE_SHOT=true; ${args[@]} /opt/backup-loop.sh" | crontab -
+  fi
+
+  exec crond -f -L /dev/stdout
+fi
+
+case "$1" in
+  now)
+    ONE_SHOT=true exec "${args[@]}" /opt/backup-loop.sh ;;
+  loop)
+    ONE_SHOT=false exec "${args[@]}" /opt/backup-loop.sh ;;
+  *)
+    echo "Unknown backup mode or argument. Use now or loop"
+    exit 1
+    ;;
+esac
