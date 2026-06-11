@@ -53,16 +53,33 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, `Usage: mc-backup <command>
+	fmt.Fprintf(os.Stderr, `mc-backup %s — Minecraft server backup daemon
+
+Usage: mc-backup <command> [flags]
 
 Commands:
   run        Start the daemon (backup loop + status API)
   status     Show live backup/archive job dashboard
   config     Read or write config values
+  version    Print version
 
-Flags:
+run flags:
   --config   Path to config file (default: /etc/mc-backup/config.toml)
-`)
+  --debug    Enable debug logging (rsync args, SSH commands, etc.)
+
+config actions:
+  get <key>   Read a config value (e.g. "global.backup_interval")
+  set <key> <value>   Write a config value (e.g. "server.creative.pause_if_no_players true")
+
+Config files: /etc/mc-backup/config.toml, ~/.config/mc-backup/config.toml
+Environment overrides: MC_BACKUP_<SECTION>_<KEY> (e.g. MC_BACKUP_GLOBAL_MAX_MBPS=20)
+
+Server discovery: drops a directory under a watch path — auto-provisioned within 1 min.
+  curl -X POST http://localhost:47990/scan   triggers immediate discovery
+  curl -X POST http://localhost:47990/cancel aborts the current backup cycle
+  curl http://localhost:47990/status         JSON job status
+
+`, version)
 }
 
 func runCmd() {
