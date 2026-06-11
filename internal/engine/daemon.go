@@ -45,13 +45,6 @@ func (d *Daemon) Cancel() {
 	}
 }
 
-func (d *Daemon) cycleContext(parent context.Context) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(parent)
-	d.cancelMu.Lock()
-	d.cancelFn = cancel
-	d.cancelMu.Unlock()
-	return ctx, cancel
-}
 func (d *Daemon) Run() error {
 	cfg := d.ac.Load()
 	setupLogging(d.Debug)
@@ -76,9 +69,7 @@ func (d *Daemon) Run() error {
 		return ctx.Err()
 	}
 
-	cycleCtx, cycleCancel := d.cycleContext(ctx)
-	d.runBackupCycle(cycleCtx)
-	cycleCancel()
+	d.runBackupCycle(ctx)
 
 	backupTicker := time.NewTicker(cfg.Global.BackupInterval.Duration)
 	defer backupTicker.Stop()
@@ -92,9 +83,7 @@ func (d *Daemon) Run() error {
 			slog.Info("daemon shutting down")
 			return ctx.Err()
 		case <-backupTicker.C:
-			cycleCtx, cycleCancel := d.cycleContext(ctx)
-			d.runBackupCycle(cycleCtx)
-			cycleCancel()
+			d.runBackupCycle(ctx)
 			newCfg := d.ac.Load()
 			newInterval := newCfg.Global.BackupInterval.Duration
 			if newInterval != cfg.Global.BackupInterval.Duration {
@@ -107,9 +96,20 @@ func (d *Daemon) Run() error {
 	}
 }
 
-func (d *Daemon) runBackupCycle(ctx context.Context) {
+func (d *Daemon) runBackupCycle(parent context.Context) {
 	d.cycleMu.Lock()
 	defer d.cycleMu.Unlock()
+
+	ctx, cancel := context.WithCancel(parent)
+	d.cancelMu.Lock()
+	d.cancelFn = cancel
+	d.cancelMu.Unlock()
+	defer func() {
+		cancel()
+		d.cancelMu.Lock()
+		d.cancelFn = nil
+		d.cancelMu.Unlock()
+	}()
 
 	cfg := d.ac.Load()
 	oldLen := len(cfg.Servers)
@@ -214,10 +214,6 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 			slog.Error("failed to save auto-provisioned config", "error", err)
 		}
 		slog.Info("new servers discovered, triggering immediate backup cycle")
-		cycleCtx, cycleCancel := d.cycleContext(ctx)
-		go func() {
-			defer cycleCancel()
-			d.runBackupCycle(cycleCtx)
-		}()
+		go d.runBackupCycle(ctx)
 	}
 }
