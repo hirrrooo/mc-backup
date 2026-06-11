@@ -1,0 +1,79 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestParseConfig(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+backup_interval = "1h"
+initial_delay = "2m"
+max_mbps = 40.0
+
+[nas]
+ssh_user = "backup"
+ssh_host = "nas.local"
+ssh_port = 22
+ssh_key = "~/.ssh/id_ed25519"
+dest_root = "/volume1/backups"
+
+[retention]
+prune_days = 7
+prune_count = 0
+
+[[watch]]
+path = "/opt/mc/docker/servers"
+namespace = "minecraft"
+local_path = "/opt/mc/backups"
+local_keep = 3
+max_disk_pct = 90
+
+[server.creative]
+enabled = true
+ssh_only = false
+container_name = "creative-mc-1"
+rcon_password = "hunter2"
+
+[server.skyblock]
+enabled = true
+ssh_only = true
+`)
+	os.WriteFile(cfgPath, content, 0644)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if cfg.Global.ListenAddr != "127.0.0.1:47990" {
+		t.Errorf("listen_addr: got %q", cfg.Global.ListenAddr)
+	}
+	if cfg.Global.BackupInterval.String() != "1h0m0s" {
+		t.Errorf("backup_interval: got %q", cfg.Global.BackupInterval)
+	}
+	if cfg.NAS.SSHUser != "backup" {
+		t.Errorf("ssh_user: got %q", cfg.NAS.SSHUser)
+	}
+	if len(cfg.Watch) != 1 {
+		t.Fatalf("watch: expected 1, got %d", len(cfg.Watch))
+	}
+	if cfg.Watch[0].Path != "/opt/mc/docker/servers" {
+		t.Errorf("watch.path: got %q", cfg.Watch[0].Path)
+	}
+	if cfg.Servers["creative"].ContainerName != "creative-mc-1" {
+		t.Errorf("server.creative.container_name: got %q", cfg.Servers["creative"].ContainerName)
+	}
+	if cfg.Servers["creative"].RconPassword != "hunter2" {
+		t.Errorf("server.creative.rcon_password: got %q", cfg.Servers["creative"].RconPassword)
+	}
+	if !cfg.Servers["skyblock"].SSHOnly {
+		t.Error("server.skyblock.ssh_only: expected true")
+	}
+}
