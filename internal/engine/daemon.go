@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -102,6 +103,35 @@ func (d *Daemon) Cancel() {
 	}
 }
 
+func (d *Daemon) restoreLastBackups(servers []struct {
+	Watch  WatchConfig
+	Name   string
+	Server ServerConfig
+}) {
+	for _, s := range servers {
+		if s.Server.SSHOnly {
+			continue
+		}
+		backupDir := s.Watch.backupDir(s.Name)
+		entries, err := os.ReadDir(backupDir)
+		if err != nil {
+			continue
+		}
+		var latest string
+		for _, e := range entries {
+			if e.IsDir() && isBackupDir(e.Name()) && e.Name() > latest {
+				latest = e.Name()
+			}
+		}
+		if latest != "" {
+			key := s.Watch.Namespace + "/" + s.Name
+			d.lastBackups[key] = &lastBackup{
+				local: filepath.Join(backupDir, latest),
+			}
+		}
+	}
+}
+
 func (d *Daemon) saveAutoServers(cfg *Config) {
 	auto := make(map[string]ServerConfig)
 	for name := range d.autoServers {
@@ -142,16 +172,11 @@ func (d *Daemon) Run() error {
 
 	d.waitForContainers(ctx, cfg)
 
-	lastBackups := readLastBackup(d.cfgPath)
-	var recent, due []string
 	servers, _ := discoverServers(cfg.Watch, cfg.Servers)
-	for _, s := range servers {
-		if s.Server.Enabled && time.Since(lastBackups[s.Name]) < cfg.Global.BackupInterval.Duration {
-			recent = append(recent, s.Name)
-		} else {
-			due = append(due, s.Name)
-		}
-	}
+	d.restoreLastBackups(servers)
+
+	lastBackups := readLastBackup(d.cfgPath)
+	recent, due := serverBuckets(servers, lastBackups, cfg.Global.BackupInterval.Duration)
 	if len(due) == 0 && len(recent) > 0 {
 		slog.Info("skipping initial backup, all servers backed up within interval",
 			"recent", recent, "interval", cfg.Global.BackupInterval.Duration)
@@ -186,6 +211,21 @@ func (d *Daemon) Run() error {
 			d.runDiscovery(ctx)
 		}
 	}
+}
+
+func serverBuckets(servers []struct {
+	Watch  WatchConfig
+	Name   string
+	Server ServerConfig
+}, lastBackups map[string]time.Time, interval time.Duration) (recent, due []string) {
+	for _, s := range servers {
+		if s.Server.Enabled && time.Since(lastBackups[s.Name]) < interval {
+			recent = append(recent, s.Name)
+		} else {
+			due = append(due, s.Name)
+		}
+	}
+	return
 }
 
 func serverNames(servers []struct {
