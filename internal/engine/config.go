@@ -136,10 +136,16 @@ func autoServersPath(cfgPath string) string {
 	return strings.TrimSuffix(cfgPath, ".toml") + "-auto.toml"
 }
 
-func copyServers(src map[string]ServerConfig) map[string]ServerConfig {
-	dst := make(map[string]ServerConfig, len(src))
-	for k, v := range src {
-		dst[k] = v
+func cloneConfig(src *Config) *Config {
+	dst := &Config{
+		Global:    src.Global,
+		NAS:       src.NAS,
+		Retention: src.Retention,
+		Watch:     src.Watch,
+		Servers:   make(map[string]ServerConfig, len(src.Servers)),
+	}
+	for k, v := range src.Servers {
+		dst.Servers[k] = v
 	}
 	return dst
 }

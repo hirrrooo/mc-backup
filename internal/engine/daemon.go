@@ -188,7 +188,7 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 	servers, newServers := discoverServers(cfg.Watch, cfg.Servers)
 
 	if len(newServers) > 0 {
-		cfg.Servers = copyServers(cfg.Servers)
+		cfg = cloneConfig(cfg)
 		for _, ns := range newServers {
 			d.autoServers[ns.Name] = true
 			cfg.Servers[ns.Name] = ns.Server
@@ -281,7 +281,7 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 	_, newServers := discoverServers(cfg.Watch, cfg.Servers)
 
 	if len(newServers) > 0 {
-		cfg.Servers = copyServers(cfg.Servers)
+		cfg = cloneConfig(cfg)
 		for _, ns := range newServers {
 			d.autoServers[ns.Name] = true
 			cfg.Servers[ns.Name] = ns.Server
