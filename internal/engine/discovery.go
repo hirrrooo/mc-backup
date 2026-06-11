@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"log/slog"
 )
@@ -81,6 +82,20 @@ func detectContainerName(serverDir, serverName string) string {
 	}
 
 	return fallbackContainerName(serverName)
+}
+
+func containerUptime(container string) (time.Duration, error) {
+	cmd := exec.Command("docker", "inspect", "--format", "{{.State.StartedAt}}", container)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("inspect %s: %w", container, err)
+	}
+	startedAt := strings.TrimSpace(string(out))
+	t, err := time.Parse(time.RFC3339Nano, startedAt)
+	if err != nil {
+		return 0, fmt.Errorf("parse startedAt %q: %w", startedAt, err)
+	}
+	return time.Since(t), nil
 }
 
 func discoverServers(watches []WatchConfig, cfg *Config) []struct {

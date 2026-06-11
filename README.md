@@ -100,25 +100,8 @@ namespace = "minecraft"                          # used for NAS subfolder naming
 [global]
 listen_addr = "127.0.0.1:47990"   # HTTP API for mc-backup status
 backup_interval = "1h"            # interval between backup cycles
-initial_delay = "2m"              # delay before first backup on startup
-max_mbps = 40.0                   # rate limit for ALL rsync to NAS (env: MC_BACKUP_GLOBAL_MAX_MBPS)
+initial_delay = "2m"              # minimum container uptime before first backup (0 to skip)
 
-[nas]
-ssh_user = "backup"               # SSH username for NAS
-ssh_host = "nas.local"            # NAS hostname or IP
-ssh_port = 22                     # SSH port (default 22)
-ssh_key = "~/.ssh/id_ed25519"     # SSH private key path
-dest_root = "/volume1/backups"    # root directory on NAS for all backups
-
-[retention]
-prune_days = 7                    # delete NAS backups older than N days (0 = disabled)
-prune_count = 0                   # keep only N most recent NAS backups (0 = disabled)
-
-[[watch]]
-path = "/opt/minecraft/servers/docker/servers"   # watched directory
-namespace = "minecraft"                          # namespace for NAS path: <dest_root>/<namespace>/<server>/
-local_keep = 3                  # number of recent snapshots to keep on SSD
-max_disk_pct = 90               # archive to NAS when SSD usage exceeds this %
 ```
 
 ### Per-Server Overrides
@@ -290,3 +273,6 @@ No. `save-off` disables automatic world saves (chunks saved periodically), but t
 
 **Can I skip backups when nobody's online?**
 Yes. Set `pause_if_no_players = true` in the server config. The daemon runs `rcon-cli list` before each backup and skips the cycle if zero players are online. Requires `rcon_password` to be set.
+
+**What does `initial_delay` actually do?**
+On startup, the daemon checks each discovered container's uptime via `docker inspect`. It waits until all containers have been running for at least `initial_delay` before the first backup — giving the Minecraft server time to finish booting its RCON listener. If all containers are already past the threshold, the daemon starts immediately with zero wait.

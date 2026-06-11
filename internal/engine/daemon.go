@@ -37,6 +37,49 @@ func NewDaemon(cfgPath string, cfg *Config) *Daemon {
 	return d
 }
 
+func (d *Daemon) waitForContainers(ctx context.Context, cfg *Config) {
+	servers := discoverServers(cfg.Watch, cfg)
+	if len(servers) == 0 {
+		slog.Info("no servers found, skipping container uptime check")
+		return
+	}
+
+	for {
+		allReady := true
+		for _, s := range servers {
+			container := s.Server.ContainerName
+			if container == "" {
+				container = s.Name + "-mc-1"
+			}
+			uptime, err := containerUptime(container)
+			if err != nil {
+				slog.Warn("cannot check container uptime, falling back to initial_delay",
+					"server", s.Name, "container", container, "error", err)
+				select {
+				case <-time.After(cfg.Global.InitialDelay.Duration):
+				case <-ctx.Done():
+				}
+				return
+			}
+			if uptime < cfg.Global.InitialDelay.Duration {
+				remaining := cfg.Global.InitialDelay.Duration - uptime
+				slog.Info("container started recently, waiting",
+					"server", s.Name, "uptime", uptime.Round(time.Second), "remaining", remaining.Round(time.Second))
+				allReady = false
+			}
+		}
+		if allReady {
+			slog.Info("all containers ready")
+			return
+		}
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func (d *Daemon) Cancel() {
 	d.cancelMu.Lock()
 	defer d.cancelMu.Unlock()
@@ -63,11 +106,7 @@ func (d *Daemon) Run() error {
 		"backup_interval", cfg.Global.BackupInterval.Duration,
 	)
 
-	select {
-	case <-time.After(cfg.Global.InitialDelay.Duration):
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	d.waitForContainers(ctx, cfg)
 
 	d.runBackupCycle(ctx)
 
