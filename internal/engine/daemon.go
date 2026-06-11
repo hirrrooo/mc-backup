@@ -225,7 +225,7 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 		d.jobTracker.Add(key, &JobInfo{
 			ServerName: s.Name,
 			Snapshot:   time.Now().Format("20060102-1504"),
-			State:      "Starting",
+			State:      "Saving",
 		})
 
 		destPath, usedSSH, err := be.BackupServer(ctx, s.Watch, s.Name, s.Server, prev.local, prev.nas)
