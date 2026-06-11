@@ -75,6 +75,15 @@ type Config struct {
 }
 
 func LoadConfig(path string) (*Config, error) {
+	cfg, err := loadConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	applyEnvOverrides(cfg)
+	return cfg, nil
+}
+
+func loadConfigFile(path string) (*Config, error) {
 	cfg := &Config{
 		Global: GlobalConfig{
 			ListenAddr:     "127.0.0.1:47990",
@@ -103,7 +112,6 @@ func LoadConfig(path string) (*Config, error) {
 
 	cfg.NAS.DestRoot = strings.TrimRight(cfg.NAS.DestRoot, "/")
 
-	applyEnvOverrides(cfg)
 	return cfg, nil
 }
 
@@ -259,7 +267,7 @@ func watchConfig(path string, ac *atomicConfig) error {
 				if event.Op&fsnotify.Write != 0 || event.Op&fsnotify.Create != 0 {
 					slog.Info("config file changed, reloading", "path", path)
 					oldCfg := ac.Load()
-					cfg, err := LoadConfig(path)
+	cfg, err := loadConfigFile(path)
 					if err != nil {
 						slog.Error("config reload failed", "error", err)
 						continue
