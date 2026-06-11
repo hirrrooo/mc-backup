@@ -130,7 +130,8 @@ const rconRetries = 5
 const rconRetryInterval = 10 * time.Second
 
 type BackupEngine struct {
-	cfg Config
+	cfg        Config
+	OnProgress func(bytesMoved int64)
 }
 
 func NewBackupEngine(cfg Config) *BackupEngine {
@@ -203,7 +204,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 			return "", false, fmt.Errorf("create NAS dir: %w", err)
 		}
 		args := nasRsyncArgs(dataDir, prevNASBackup, destDir, be.cfg.NAS, be.cfg.Global.MaxMBps, excludes)
-		if err := runRsync(ctx, args, nil); err != nil {
+		if err := runRsync(ctx, args, be.OnProgress); err != nil {
 			return "", false, fmt.Errorf("NAS rsync: %w", err)
 		}
 		destPath = destDir
@@ -214,7 +215,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 			return "", false, fmt.Errorf("mkdir: %w", err)
 		}
 		args := localRsyncArgs(dataDir, prevLocalBackup, destPath, excludes)
-		if err := runRsync(ctx, args, nil); err != nil {
+		if err := runRsync(ctx, args, be.OnProgress); err != nil {
 			return "", false, fmt.Errorf("local rsync: %w", err)
 		}
 	}

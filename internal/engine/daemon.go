@@ -374,11 +374,29 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 			prev = &lastBackup{}
 		}
 
+		dataDir := s.Server.DataDir
+		if dataDir == "" {
+			dataDir = filepath.Join(s.Watch.Path, s.Name, "mc-data")
+		}
+		totalSize, _ := dirSize(dataDir)
+
+		ts := time.Now().Format("20060102-1504")
 		d.jobTracker.Add(key, &JobInfo{
 			ServerName: s.Name,
-			Snapshot:   time.Now().Format("20060102-1504"),
+			Snapshot:   ts,
 			State:      "Saving",
+			TotalSize:  totalSize,
 		})
+
+		be.OnProgress = func(bytesMoved int64) {
+			d.jobTracker.Add(key, &JobInfo{
+				ServerName: s.Name,
+				Snapshot:   ts,
+				State:      "Saving",
+				BytesMoved: bytesMoved,
+				TotalSize:  totalSize,
+			})
+		}
 
 		destPath, usedSSH, err := be.BackupServer(ctx, s.Watch, s.Name, s.Server, prev.local, prev.nas)
 		if err != nil {
