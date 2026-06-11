@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -77,8 +78,15 @@ func runRsync(ctx context.Context, args []string, onProgress func(bytesMoved int
 		if err := cmd.Start(); err != nil {
 			return err
 		}
-		go streamRsyncProgress(stdout, onProgress)
-		return cmd.Wait()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			streamRsyncProgress(stdout, onProgress)
+			wg.Done()
+		}()
+		err = cmd.Wait()
+		wg.Wait()
+		return err
 	}
 
 	cmd.Stdout = os.Stdout
