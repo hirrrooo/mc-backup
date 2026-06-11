@@ -1,0 +1,17 @@
+[Unit]
+Description=Minecraft Backup & Archive Service
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/mc-backup run --config /etc/mc-backup/config.toml
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
