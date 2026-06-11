@@ -133,3 +133,43 @@ rcon_password = "filepass"
 		t.Errorf("case-insensitive override failed: got %q", cfg.Servers["creative"].RconPassword)
 	}
 }
+
+func TestSaveConfig(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+
+[nas]
+ssh_host = "nas.local"
+`)
+	os.WriteFile(cfgPath, content, 0644)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	cfg.Servers["new-server"] = ServerConfig{
+		Enabled:       true,
+		ContainerName: "new-server-mc-1",
+	}
+
+	if err := SaveConfig(cfgPath, cfg); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+
+	reloaded, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	s, ok := reloaded.Servers["new-server"]
+	if !ok {
+		t.Fatal("new server not in reloaded config")
+	}
+	if s.ContainerName != "new-server-mc-1" {
+		t.Errorf("new server not persisted correctly: got %q", s.ContainerName)
+	}
+}

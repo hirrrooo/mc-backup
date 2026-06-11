@@ -97,6 +97,18 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
+func SaveConfig(path string, cfg *Config) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	defer f.Close()
+
+	enc := toml.NewEncoder(f)
+	enc.Indent = ""
+	return enc.Encode(cfg)
+}
+
 func applyEnvOverrides(cfg *Config) {
 	for _, e := range os.Environ() {
 		kv := strings.SplitN(e, "=", 2)
