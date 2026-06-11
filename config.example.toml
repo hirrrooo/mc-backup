@@ -1,0 +1,23 @@
+[global]
+listen_addr = "127.0.0.1:47990"
+backup_interval = "1h"
+initial_delay = "2m"
+max_mbps = 40.0
+
+[nas]
+ssh_user = "backup"
+ssh_host = "nas.local"
+ssh_port = 22
+ssh_key = "~/.ssh/id_ed25519"
+dest_root = "/volume1/backups"
+
+[retention]
+prune_days = 7
+prune_count = 0
+
+[[watch]]
+path = "/opt/minecraft/servers/docker/servers"
+namespace = "minecraft"
+local_path = "/opt/minecraft/backups"
+local_keep = 3
+max_disk_pct = 90
