@@ -267,7 +267,7 @@ func watchConfig(path string, ac *atomicConfig) error {
 				if event.Op&fsnotify.Write != 0 || event.Op&fsnotify.Create != 0 {
 					slog.Info("config file changed, reloading", "path", path)
 					oldCfg := ac.Load()
-	cfg, err := loadConfigFile(path)
+					cfg, err := LoadConfig(path)
 					if err != nil {
 						slog.Error("config reload failed", "error", err)
 						continue
@@ -319,7 +319,7 @@ func GetConfigValue(cfg *Config, key string) string {
 }
 
 func SetConfigValue(path, key, val string) error {
-	cfg, err := LoadConfig(path)
+	cfg, err := loadConfigFile(path)
 	if err != nil {
 		return err
 	}
