@@ -136,6 +136,22 @@ func autoServersPath(cfgPath string) string {
 	return strings.TrimSuffix(cfgPath, ".toml") + "-auto.toml"
 }
 
+func loadAutoServerNames(cfgPath string) map[string]bool {
+	names := make(map[string]bool)
+	autoPath := autoServersPath(cfgPath)
+	var tmp struct {
+		Servers map[string]ServerConfig `toml:"server"`
+	}
+	if _, err := toml.DecodeFile(autoPath, &tmp); err != nil && !os.IsNotExist(err) {
+		slog.Warn("cannot read auto config", "path", autoPath, "error", err)
+		return names
+	}
+	for k := range tmp.Servers {
+		names[k] = true
+	}
+	return names
+}
+
 func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 	autoPath := autoServersPath(cfgPath)
 	if len(servers) == 0 {
@@ -293,14 +309,12 @@ func watchConfig(path string, ac *atomicConfig) error {
 	if err != nil {
 		return fmt.Errorf("watcher: %w", err)
 	}
-	if err := watcher.Add(path); err != nil {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	autoBase := filepath.Base(autoServersPath(path))
+	if err := watcher.Add(dir); err != nil {
 		watcher.Close()
-		return fmt.Errorf("watch %s: %w", path, err)
-	}
-	if autoPath := autoServersPath(path); autoPath != "" {
-		if err := watcher.Add(autoPath); err != nil && !os.IsNotExist(err) {
-			slog.Warn("cannot watch auto config", "path", autoPath, "error", err)
-		}
+		return fmt.Errorf("watch %s: %w", dir, err)
 	}
 
 	go func() {
@@ -311,22 +325,27 @@ func watchConfig(path string, ac *atomicConfig) error {
 				if !ok {
 					return
 				}
-				if event.Op&fsnotify.Write != 0 || event.Op&fsnotify.Create != 0 {
-					slog.Info("config file changed, reloading", "path", path)
-					oldCfg := ac.Load()
-					cfg, err := LoadConfig(path)
-					if err != nil {
-						slog.Error("config reload failed", "error", err)
-						continue
-					}
-					if oldCfg != nil && oldCfg.Global.ListenAddr != cfg.Global.ListenAddr {
-						slog.Warn("listen_addr changed, requires restart to take effect",
-							"old", oldCfg.Global.ListenAddr, "new", cfg.Global.ListenAddr)
-					}
-					ac.Store(cfg)
-					slog.Info("config reloaded successfully")
+				name := filepath.Base(event.Name)
+				if name != base && name != autoBase {
+					continue
 				}
-			case err, ok := <-watcher.Errors:
+			if event.Op&fsnotify.Write == 0 && event.Op&fsnotify.Create == 0 {
+				continue
+			}
+			slog.Info("config file changed, reloading", "path", path)
+			oldCfg := ac.Load()
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				slog.Error("config reload failed", "error", err)
+				continue
+			}
+			if oldCfg != nil && oldCfg.Global.ListenAddr != cfg.Global.ListenAddr {
+				slog.Warn("listen_addr changed, requires restart to take effect",
+					"old", oldCfg.Global.ListenAddr, "new", cfg.Global.ListenAddr)
+			}
+			ac.Store(cfg)
+			slog.Info("config reloaded successfully")
+		case err, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}

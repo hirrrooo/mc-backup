@@ -107,17 +107,23 @@ func containerRunning(container string) bool {
 	return strings.TrimSpace(string(out)) == container
 }
 
-func discoverServers(watches []WatchConfig, cfg *Config) ([]struct {
+func discoverServers(watches []WatchConfig, knownServers map[string]ServerConfig) ([]struct {
 	Watch  WatchConfig
 	Name   string
 	Server ServerConfig
-}, []string) {
+}, []struct {
+	Name   string
+	Server ServerConfig
+}) {
 	var results []struct {
 		Watch  WatchConfig
 		Name   string
 		Server ServerConfig
 	}
-	var newServers []string
+	var newServers []struct {
+		Name   string
+		Server ServerConfig
+	}
 	for _, w := range watches {
 		entries, err := os.ReadDir(w.Path)
 		if err != nil {
@@ -133,7 +139,7 @@ func discoverServers(watches []WatchConfig, cfg *Config) ([]struct {
 				slog.Warn("discovery: skipping invalid server name", "name", name, "path", w.Path)
 				continue
 			}
-			server, exists := cfg.Servers[name]
+			server, exists := knownServers[name]
 			if exists && !server.Enabled {
 				continue
 			}
@@ -155,11 +161,15 @@ func discoverServers(watches []WatchConfig, cfg *Config) ([]struct {
 				"container", containerName,
 				"namespace", w.Namespace,
 			)
-			if cfg.Servers == nil {
-				cfg.Servers = make(map[string]ServerConfig)
-			}
-			cfg.Servers[name] = newServer
-			newServers = append(newServers, name)
+			newServers = append(newServers, struct {
+				Name   string
+				Server ServerConfig
+			}{Name: name, Server: newServer})
+			results = append(results, struct {
+				Watch  WatchConfig
+				Name   string
+				Server ServerConfig
+			}{Watch: w, Name: name, Server: newServer})
 			results = append(results, struct {
 				Watch  WatchConfig
 				Name   string

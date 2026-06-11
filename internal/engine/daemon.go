@@ -33,14 +33,14 @@ func NewDaemon(cfgPath string, cfg *Config) *Daemon {
 		cfgPath:     cfgPath,
 		jobTracker:  NewJobTracker(),
 		lastBackups: make(map[string]*lastBackup),
-		autoServers: make(map[string]bool),
+		autoServers: loadAutoServerNames(cfgPath),
 	}
 	d.ac.Store(cfg)
 	return d
 }
 
 func (d *Daemon) waitForContainers(ctx context.Context, cfg *Config) {
-	servers, _ := discoverServers(cfg.Watch, cfg)
+	servers, _ := discoverServers(cfg.Watch, cfg.Servers)
 	if len(servers) == 0 {
 		slog.Info("no servers found, skipping container uptime check")
 		return
@@ -185,10 +185,11 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 	}()
 
 	cfg := d.ac.Load()
-	servers, newServers := discoverServers(cfg.Watch, cfg)
+	servers, newServers := discoverServers(cfg.Watch, cfg.Servers)
 
-	for _, name := range newServers {
-		d.autoServers[name] = true
+	for _, ns := range newServers {
+		d.autoServers[ns.Name] = true
+		cfg.Servers[ns.Name] = ns.Server
 	}
 	if len(newServers) > 0 {
 		d.saveAutoServers(cfg)
@@ -276,10 +277,11 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 
 func (d *Daemon) runDiscovery(ctx context.Context) {
 	cfg := d.ac.Load()
-	_, newServers := discoverServers(cfg.Watch, cfg)
+	_, newServers := discoverServers(cfg.Watch, cfg.Servers)
 
-	for _, name := range newServers {
-		d.autoServers[name] = true
+	for _, ns := range newServers {
+		d.autoServers[ns.Name] = true
+		cfg.Servers[ns.Name] = ns.Server
 	}
 
 	if len(newServers) > 0 {
