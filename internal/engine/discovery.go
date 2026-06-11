@@ -147,7 +147,7 @@ func discoverServers(watches []WatchConfig, cfg *Config) ([]struct {
 			}
 			containerName := detectContainerName(filepath.Join(w.Path, name), name)
 			newServer := ServerConfig{
-				Enabled:       true,
+				Enabled:       false,
 				ContainerName: containerName,
 			}
 			slog.Info("discovery: provisioning new server",
