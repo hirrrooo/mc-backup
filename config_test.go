@@ -77,3 +77,40 @@ ssh_only = true
 		t.Error("server.skyblock.ssh_only: expected true")
 	}
 }
+
+func TestEnvOverride(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+
+[nas]
+ssh_host = "nas.local"
+
+[server.creative]
+enabled = true
+rcon_password = "filepass"
+`)
+	os.WriteFile(cfgPath, content, 0644)
+
+	t.Setenv("MC_BACKUP_NAS_SSH_HOST", "override.local")
+	t.Setenv("MC_BACKUP_NAS_SSH_PORT", "2222")
+	t.Setenv("MC_BACKUP_SERVER_CREATIVE_RCON_PASSWORD", "envpass")
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if cfg.NAS.SSHHost != "override.local" {
+		t.Errorf("SSHHost: got %q, want override.local", cfg.NAS.SSHHost)
+	}
+	if cfg.NAS.SSHPort != 2222 {
+		t.Errorf("SSHPort: got %d, want 2222", cfg.NAS.SSHPort)
+	}
+	if cfg.Servers["creative"].RconPassword != "envpass" {
+		t.Errorf("RconPassword: got %q, want envpass", cfg.Servers["creative"].RconPassword)
+	}
+}

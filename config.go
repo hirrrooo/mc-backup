@@ -96,6 +96,92 @@ func applyEnvOverrides(cfg *Config) {
 		if len(kv) != 2 || !strings.HasPrefix(kv[0], "MC_BACKUP_") {
 			continue
 		}
-		_ = kv
+		parts := strings.Split(strings.ToLower(kv[0]), "_")
+		if len(parts) < 4 {
+			continue
+		}
+		section := parts[2]
+		serverName := ""
+		keyIdx := 3
+		if section == "server" && len(parts) >= 5 {
+			serverName = parts[3]
+			keyIdx = 4
+		}
+		keyParts := parts[keyIdx:]
+		key := strings.Join(keyParts, "_")
+		val := kv[1]
+
+		switch section {
+		case "global":
+			setGlobalField(&cfg.Global, key, val)
+		case "nas":
+			setNASField(&cfg.NAS, key, val)
+		case "retention":
+			setRetentionField(&cfg.Retention, key, val)
+		case "server":
+			if serverName != "" {
+				s := cfg.Servers[serverName]
+				setServerField(&s, key, val)
+				cfg.Servers[serverName] = s
+			}
+		}
+	}
+}
+
+func setGlobalField(v *GlobalConfig, key, val string) {
+	switch key {
+	case "listen_addr":
+		v.ListenAddr = val
+	case "max_mbps":
+		fmt.Sscanf(val, "%f", &v.MaxMBps)
+	case "backup_interval":
+		d, err := time.ParseDuration(val)
+		if err == nil {
+			v.BackupInterval = Duration{d}
+		}
+	case "initial_delay":
+		d, err := time.ParseDuration(val)
+		if err == nil {
+			v.InitialDelay = Duration{d}
+		}
+	}
+}
+
+func setNASField(v *NASConfig, key, val string) {
+	switch key {
+	case "ssh_user":
+		v.SSHUser = val
+	case "ssh_host":
+		v.SSHHost = val
+	case "ssh_port":
+		fmt.Sscanf(val, "%d", &v.SSHPort)
+	case "ssh_key":
+		v.SSHKey = val
+	case "dest_root":
+		v.DestRoot = val
+	}
+}
+
+func setRetentionField(v *RetentionConfig, key, val string) {
+	switch key {
+	case "prune_days":
+		fmt.Sscanf(val, "%d", &v.PruneDays)
+	case "prune_count":
+		fmt.Sscanf(val, "%d", &v.PruneCount)
+	}
+}
+
+func setServerField(s *ServerConfig, key, val string) {
+	switch key {
+	case "enabled":
+		s.Enabled = strings.ToLower(val) == "true"
+	case "ssh_only":
+		s.SSHOnly = strings.ToLower(val) == "true"
+	case "container_name":
+		s.ContainerName = val
+	case "rcon_password":
+		s.RconPassword = val
+	case "data_dir":
+		s.DataDir = val
 	}
 }
