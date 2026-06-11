@@ -116,17 +116,16 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 		}
 
 		var latestLocal, latestNAS string
-		var latestTime time.Time
 
 		backupDir := s.Watch.backupDir(s.Name)
 		if entries, err := os.ReadDir(backupDir); err == nil {
 			for _, e := range entries {
-				if e.IsDir() && isBackupDir(e.Name()) {
-					if info, err := e.Info(); err == nil && info.ModTime().After(latestTime) {
-						latestTime = info.ModTime()
-						latestLocal = filepath.Join(backupDir, e.Name())
-					}
+				if e.IsDir() && isBackupDir(e.Name()) && e.Name() > latestLocal {
+					latestLocal = e.Name()
 				}
+			}
+			if latestLocal != "" {
+				latestLocal = filepath.Join(backupDir, latestLocal)
 			}
 		}
 
@@ -134,7 +133,7 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 		nasArgs := sshBaseArgs(cfg.NAS)
 		nasArgs = append(nasArgs,
 			fmt.Sprintf("%s@%s", cfg.NAS.SSHUser, cfg.NAS.SSHHost),
-			fmt.Sprintf("ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | head -1", nasDir),
+			fmt.Sprintf("ls -dt '%s'/[0-9]*-[0-9]* 2>/dev/null | head -1", nasDir),
 		)
 		cmd := exec.CommandContext(ctx, nasArgs[0], nasArgs[1:]...)
 		if out, err := cmd.Output(); err == nil {
@@ -142,12 +141,11 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 			if nasSnap != "" {
 				latestNAS = nasDir + "/" + filepath.Base(nasSnap)
 			}
+		} else {
+			slog.Debug("cannot list NAS snapshots for discovery", "server", s.Name, "error", err)
 		}
 
 		if latestLocal != "" || latestNAS != "" {
-			if latestTime.IsZero() {
-				latestTime = time.Now()
-			}
 			writeLastSnapshot(d.cfgPath, s.Name, latestLocal, latestNAS)
 			slog.Info("discovered existing snapshot",
 				"server", s.Name, "local", latestLocal, "nas", latestNAS)
@@ -199,6 +197,9 @@ func (d *Daemon) Run() error {
 
 	snapshots := readLastSnapshots(d.cfgPath)
 	for name, snap := range snapshots {
+		if s, ok := cfg.Servers[name]; ok && !s.Enabled {
+			continue
+		}
 		key := watchKey(cfg, name)
 		if key != "" && d.lastBackups[key] == nil {
 			d.lastBackups[key] = &lastBackup{local: snap.Local, nas: snap.NAS}
@@ -207,6 +208,9 @@ func (d *Daemon) Run() error {
 
 	var recent, due []string
 	for name, snap := range snapshots {
+		if s, ok := cfg.Servers[name]; ok && !s.Enabled {
+			continue
+		}
 		if time.Since(snap.Time) < cfg.Global.BackupInterval.Duration {
 			recent = append(recent, name)
 		} else {
