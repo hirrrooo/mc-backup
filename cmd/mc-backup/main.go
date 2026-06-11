@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"mc-backup/internal/engine"
 )
 
 const version = "0.1.0"
@@ -69,14 +71,14 @@ func runCmd() {
 	debug := fs.Bool("debug", false, "enable debug logging")
 	fs.Parse(os.Args[2:])
 
-	cfg, err := LoadConfig(*cfgPath)
+	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
 
-	d := NewDaemon(*cfgPath, cfg)
-	d.debug = *debug
+	d := engine.NewDaemon(*cfgPath, cfg)
+	d.Debug = *debug
 	if err := d.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
 		os.Exit(1)
@@ -88,13 +90,13 @@ func statusCmd() {
 	cfgPath := fs.String("config", findConfig(), "config file path")
 	fs.Parse(os.Args[2:])
 
-	cfg, err := LoadConfig(*cfgPath)
+	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := printDashboard(cfg.Global.ListenAddr); err != nil {
+	if err := engine.PrintDashboard(cfg.Global.ListenAddr); err != nil {
 		fmt.Fprintf(os.Stderr, "status error: %v\n", err)
 		os.Exit(1)
 	}
@@ -117,19 +119,19 @@ func configCmd() {
 			fmt.Fprintln(os.Stderr, "usage: mc-backup config get <key>")
 			os.Exit(1)
 		}
-		cfg, err := LoadConfig(*cfgPath)
+		cfg, err := engine.LoadConfig(*cfgPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 			os.Exit(1)
 		}
-		val := getConfigValue(cfg, args[1])
+		val := engine.GetConfigValue(cfg, args[1])
 		fmt.Println(val)
 	case "set":
 		if len(args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: mc-backup config set <key> <value>")
 			os.Exit(1)
 		}
-		if err := setConfigValue(*cfgPath, args[1], args[2]); err != nil {
+		if err := engine.SetConfigValue(*cfgPath, args[1], args[2]); err != nil {
 			fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 			os.Exit(1)
 		}

@@ -1,4 +1,4 @@
-package main
+package engine
 
 import (
 	"fmt"
@@ -58,11 +58,12 @@ func (w WatchConfig) backupDir(serverName string) string {
 }
 
 type ServerConfig struct {
-	Enabled       bool   `toml:"enabled"`
-	SSHOnly       bool   `toml:"ssh_only"`
-	ContainerName string `toml:"container_name"`
-	RconPassword  string `toml:"rcon_password"`
-	DataDir       string `toml:"data_dir"`
+	Enabled             bool   `toml:"enabled"`
+	SSHOnly             bool   `toml:"ssh_only"`
+	ContainerName       string `toml:"container_name"`
+	RconPassword        string `toml:"rcon_password"`
+	DataDir             string `toml:"data_dir"`
+	PauseIfNoPlayers    bool   `toml:"pause_if_no_players"`
 }
 
 type Config struct {
@@ -218,6 +219,8 @@ func setServerField(s *ServerConfig, key, val string) {
 		s.RconPassword = val
 	case "data_dir":
 		s.DataDir = val
+	case "pause_if_no_players":
+		s.PauseIfNoPlayers = strings.ToLower(val) == "true"
 	}
 }
 
@@ -277,7 +280,7 @@ func watchConfig(path string, ac *atomicConfig) error {
 	return nil
 }
 
-func getConfigValue(cfg *Config, key string) string {
+func GetConfigValue(cfg *Config, key string) string {
 	parts := strings.Split(key, ".")
 	if len(parts) < 2 {
 		return ""
@@ -305,7 +308,7 @@ func getConfigValue(cfg *Config, key string) string {
 	return ""
 }
 
-func setConfigValue(path, key, val string) error {
+func SetConfigValue(path, key, val string) error {
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		return err
@@ -390,6 +393,8 @@ func getServerFieldStr(s ServerConfig, key string) string {
 		return s.RconPassword
 	case "data_dir":
 		return s.DataDir
+	case "pause_if_no_players":
+		return fmt.Sprintf("%t", s.PauseIfNoPlayers)
 	}
 	return ""
 }

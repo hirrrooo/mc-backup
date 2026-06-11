@@ -20,3 +20,9 @@ path = "/opt/minecraft/servers/docker/servers"
 namespace = "minecraft"
 local_keep = 3
 max_disk_pct = 90
+
+# Per-server overrides are auto-generated on first discovery.
+# Uncomment and edit to customize:
+# [server.example]
+# pause_if_no_players = true   # skip backups when no one is online
+# ssh_only = true              # skip local SSD, go directly to NAS

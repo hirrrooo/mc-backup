@@ -131,11 +131,14 @@ enabled = true                  # set to false to skip backups for this server
 ssh_only = true                 # skip local SSD, rsync directly to NAS
 container_name = "survival-mc-1"  # override auto-detected container name
 rcon_password = "hunter2"       # RCON password (required for backup to work)
+pause_if_no_players = true      # skip backup when server is empty
 ```
 
 Set `enabled = false` to stop backing up a server without deleting its config.
 
 Set `ssh_only = true` for servers with large worlds — backups go straight to NAS, never touch local SSD.
+
+Set `pause_if_no_players = true` to skip backups when nobody is online. The daemon runs `rcon-cli list` before each cycle and skips the server if the player count is zero.
 
 ## CLI Usage
 
@@ -282,5 +285,8 @@ Yes. Add multiple `[[watch]]` blocks with different paths and namespaces. Each i
 **Why is my first backup taking so long?**  
 The first backup has no `--link-dest` target, so it's a full copy of the entire world. Subsequent backups are near-instant for unchanged worlds and proportional to changed data for active worlds.
 
-**Does the backup stop the server?**  
+**Does the backup stop the server?**
 No. `save-off` disables automatic world saves (chunks saved periodically), but the server continues running and accepting players. `save-all flush` triggers a manual save and flush to disk before rsync runs. `save-on` re-enables autosave. The entire process typically takes seconds plus rsync time.
+
+**Can I skip backups when nobody's online?**
+Yes. Set `pause_if_no_players = true` in the server config. The daemon runs `rcon-cli list` before each backup and skips the cycle if zero players are online. Requires `rcon_password` to be set.

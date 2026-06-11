@@ -1,4 +1,4 @@
-package main
+package engine
 
 import (
 	"encoding/json"
@@ -70,7 +70,7 @@ func startStatusServer(addr string, jt *JobTracker) {
 	}()
 }
 
-func printDashboard(addr string) error {
+func PrintDashboard(addr string) error {
 	resp, err := http.Get(fmt.Sprintf("http://%s/status", addr))
 	if err != nil {
 		return fmt.Errorf("cannot connect to daemon at %s: %w", addr, err)

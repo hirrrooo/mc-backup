@@ -3,3 +3,5 @@ mc-backup
 *.swo
 *~
 .DS_Store
+.claude
+

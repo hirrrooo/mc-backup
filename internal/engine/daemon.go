@@ -1,4 +1,4 @@
-package main
+package engine
 
 import (
 	"context"
@@ -22,7 +22,7 @@ type Daemon struct {
 	jobTracker  *JobTracker
 	lastBackups map[string]*lastBackup
 	cycleMu     sync.Mutex
-	debug       bool
+	Debug       bool
 }
 
 func NewDaemon(cfgPath string, cfg *Config) *Daemon {
@@ -37,7 +37,7 @@ func NewDaemon(cfgPath string, cfg *Config) *Daemon {
 
 func (d *Daemon) Run() error {
 	cfg := d.ac.Load()
-	setupLogging(d.debug)
+	setupLogging(d.Debug)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -104,6 +104,22 @@ func (d *Daemon) runBackupCycle(ctx context.Context) {
 	for _, s := range servers {
 		if !s.Server.Enabled {
 			continue
+		}
+
+		if s.Server.PauseIfNoPlayers {
+			container := s.Server.ContainerName
+			if container == "" {
+				container = s.Name + "-mc-1"
+			}
+			out, err := rconOutput(ctx, container, s.Server.RconPassword, "list")
+			if err != nil {
+				slog.Warn("cannot query player count, skipping backup", "server", s.Name, "error", err)
+				continue
+			}
+			if countPlayers(out) == 0 {
+				slog.Info("no players online, skipping backup", "server", s.Name)
+				continue
+			}
 		}
 
 		be := NewBackupEngine(*cfg)

@@ -9,7 +9,7 @@ SERVICEDIR := /etc/systemd/system
 .PHONY: build install uninstall clean
 
 build:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(BINARY) .
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(BINARY) ./cmd/mc-backup
 
 install: build
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(CONFDIR)
