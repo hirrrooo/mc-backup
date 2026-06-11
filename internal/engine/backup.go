@@ -61,8 +61,8 @@ func nasRsyncArgs(dataDir, prevBackup, destDir string, nas NASConfig, maxMbps fl
 func runRsync(ctx context.Context, args []string, onProgress func(bytesMoved int64)) error {
 	if onProgress != nil {
 		newArgs := make([]string, 0, len(args)+1)
-		newArgs = append(newArgs, args[0], "--info=progress2")
-		newArgs = append(newArgs, args[1:]...)
+		newArgs = append(newArgs, args[0], args[1], "--info=progress2")
+		newArgs = append(newArgs, args[2:]...)
 		args = newArgs
 	}
 
