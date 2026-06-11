@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"log/slog"
 )
@@ -39,7 +38,7 @@ func (ae *ArchiveEngine) ArchiveIfNeeded(ctx context.Context, watch WatchConfig,
 	}
 	var snapshots []string
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), serverName+"-") {
+		if e.IsDir() && isBackupDir(e.Name()) {
 			snapshots = append(snapshots, e.Name())
 		}
 	}

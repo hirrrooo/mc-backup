@@ -57,6 +57,44 @@ func runRsync(ctx context.Context, args []string) error {
 	return cmd.Run()
 }
 
+func checkNASReady(ctx context.Context, nas NASConfig) error {
+	sentinel := fmt.Sprintf("%s/.nas-ready", nas.DestRoot)
+	args := []string{"ssh"}
+	if nas.SSHPort != 0 && nas.SSHPort != 22 {
+		args = append(args, "-p", fmt.Sprintf("%d", nas.SSHPort))
+	}
+	if nas.SSHKey != "" {
+		args = append(args, "-i", os.ExpandEnv(nas.SSHKey))
+	}
+	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+		fmt.Sprintf("%s@%s", nas.SSHUser, nas.SSHHost),
+		fmt.Sprintf("test -f %s", sentinel),
+	)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("NAS sentinel %s not found", sentinel)
+	}
+	return nil
+}
+
+func isBackupDir(name string) bool {
+	if len(name) != 13 {
+		return false
+	}
+	if name[8] != '-' {
+		return false
+	}
+	for i, c := range name {
+		if i == 8 {
+			continue
+		}
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 const rconRetries = 5
 const rconRetryInterval = 10 * time.Second
 
@@ -68,7 +106,7 @@ func NewBackupEngine(cfg Config) *BackupEngine {
 	return &BackupEngine{cfg: cfg}
 }
 
-func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, serverName string, server ServerConfig, prevBackupPath string) (string, error) {
+func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, serverName string, server ServerConfig, prevBackupPath string) (destPath string, rerr error) {
 	dataDir := server.DataDir
 	if dataDir == "" {
 		dataDir = filepath.Join(watch.Path, serverName)
@@ -84,19 +122,16 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 		return "", fmt.Errorf("save-off: %w", err)
 	}
 
-	saveOnComplete := make(chan error, 1)
-	go func() {
-		defer close(saveOnComplete)
+	defer func() {
+		slog.Info("re-enabling autosave", "server", serverName)
 		detachedCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		saveOnComplete <- runRcon(detachedCtx, container, server.RconPassword, "save-on", rconRetries, rconRetryInterval)
-	}()
-
-	defer func() {
-		err := <-saveOnComplete
-		if err != nil {
-			slog.Error("FATAL: save-on failed after backup", "server", serverName, "error", err)
-			os.Exit(1)
+		if err := runRcon(detachedCtx, container, server.RconPassword, "save-on", rconRetries, rconRetryInterval); err != nil {
+			saveOnErr := fmt.Errorf("FATAL: save-on failed after backup for %s: %w", serverName, err)
+			slog.Error(saveOnErr.Error())
+			if rerr == nil {
+				rerr = saveOnErr
+			}
 		}
 	}()
 
@@ -112,18 +147,22 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 	if !useSSH {
 		if pct, err := diskUsagePct(watch.LocalPath); err == nil {
 			estSize, _ := dirSize(dataDir)
-			freePct := 100.0 - pct
-			neededPct := (float64(estSize) / float64(totalDiskSpace(watch.LocalPath))) * 100.0
-			if freePct-neededPct < float64(100-watch.MaxDiskPct) {
-				slog.Info("SSD usage projected above threshold, routing to NAS",
-					"server", serverName, "current_pct", pct, "estimated_pct", pct+neededPct)
-				useSSH = true
+			totalSpace := totalDiskSpace(watch.LocalPath)
+			if totalSpace > 0 {
+				neededPct := (float64(estSize) / float64(totalSpace)) * 100.0
+				if freePct := 100.0 - pct; freePct-neededPct < float64(100-watch.MaxDiskPct) {
+					slog.Info("SSD usage projected above threshold, routing to NAS",
+						"server", serverName, "current_pct", pct, "estimated_pct", pct+neededPct)
+					useSSH = true
+				}
 			}
 		}
 	}
 
-	var destPath string
 	if useSSH {
+		if err := checkNASReady(ctx, be.cfg.NAS); err != nil {
+			return "", fmt.Errorf("NAS not ready: %w", err)
+		}
 		destDir := fmt.Sprintf("%s/%s/%s/%s", be.cfg.NAS.DestRoot, watch.Namespace, serverName, ts)
 		args := nasRsyncArgs(dataDir, prevBackupPath, destDir, be.cfg.NAS, be.cfg.Global.MaxMBps, excludes)
 		if err := runRsync(ctx, args); err != nil {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ type Daemon struct {
 	ac          atomicConfig
 	jobTracker  *JobTracker
 	lastBackups map[string]string
+	cycleMu     sync.Mutex
 }
 
 func NewDaemon(cfgPath string, cfg *Config) *Daemon {
@@ -54,18 +56,16 @@ func (d *Daemon) Run() error {
 
 	d.runBackupCycle(ctx)
 
-	backupTicker := time.NewTicker(cfg.Global.BackupInterval.Duration)
-	defer backupTicker.Stop()
-
 	discoveryTicker := time.NewTicker(1 * time.Minute)
 	defer discoveryTicker.Stop()
 
 	for {
+		cfg := d.ac.Load()
 		select {
 		case <-ctx.Done():
 			slog.Info("daemon shutting down")
 			return ctx.Err()
-		case <-backupTicker.C:
+		case <-backupTimer(cfg.Global.BackupInterval.Duration):
 			d.runBackupCycle(ctx)
 		case <-discoveryTicker.C:
 			d.runDiscovery(ctx)
@@ -73,9 +73,24 @@ func (d *Daemon) Run() error {
 	}
 }
 
+func backupTimer(interval time.Duration) <-chan time.Time {
+	return time.After(interval)
+}
+
 func (d *Daemon) runBackupCycle(ctx context.Context) {
+	d.cycleMu.Lock()
+	defer d.cycleMu.Unlock()
+
 	cfg := d.ac.Load()
+	oldLen := len(cfg.Servers)
 	servers := discoverServers(cfg.Watch, cfg)
+
+	if len(cfg.Servers) > oldLen {
+		if err := SaveConfig(d.cfgPath, cfg); err != nil {
+			slog.Error("failed to save auto-provisioned config", "error", err)
+		}
+		slog.Info("auto-provisioned new servers in backup cycle")
+	}
 
 	for _, s := range servers {
 		if !s.Server.Enabled {

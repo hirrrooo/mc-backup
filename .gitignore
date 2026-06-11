@@ -1,0 +1,5 @@
+mc-backup
+*.swp
+*.swo
+*~
+.DS_Store
