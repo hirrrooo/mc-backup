@@ -22,6 +22,8 @@ type Daemon struct {
 	jobTracker  *JobTracker
 	lastBackups map[string]*lastBackup
 	cycleMu     sync.Mutex
+	cancelMu    sync.Mutex
+	cancelFn    context.CancelFunc
 	Debug       bool
 }
 
@@ -35,6 +37,21 @@ func NewDaemon(cfgPath string, cfg *Config) *Daemon {
 	return d
 }
 
+func (d *Daemon) Cancel() {
+	d.cancelMu.Lock()
+	defer d.cancelMu.Unlock()
+	if d.cancelFn != nil {
+		d.cancelFn()
+	}
+}
+
+func (d *Daemon) cycleContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	d.cancelMu.Lock()
+	d.cancelFn = cancel
+	d.cancelMu.Unlock()
+	return ctx, cancel
+}
 func (d *Daemon) Run() error {
 	cfg := d.ac.Load()
 	setupLogging(d.Debug)
@@ -46,7 +63,7 @@ func (d *Daemon) Run() error {
 		slog.Warn("config watcher failed, live reload disabled", "error", err)
 	}
 
-	startStatusServer(cfg.Global.ListenAddr, d.jobTracker)
+	startStatusServer(cfg.Global.ListenAddr, d.jobTracker, d.Cancel)
 
 	slog.Info("mc-backup daemon starting",
 		"initial_delay", cfg.Global.InitialDelay.Duration,
@@ -73,7 +90,8 @@ func (d *Daemon) Run() error {
 			slog.Info("daemon shutting down")
 			return ctx.Err()
 		case <-backupTicker.C:
-			d.runBackupCycle(ctx)
+			cycleCtx, _ := d.cycleContext(ctx)
+			d.runBackupCycle(cycleCtx)
 			newCfg := d.ac.Load()
 			newInterval := newCfg.Global.BackupInterval.Duration
 			if newInterval != cfg.Global.BackupInterval.Duration {
@@ -102,6 +120,13 @@ func (d *Daemon) runBackupCycle(ctx context.Context) {
 	}
 
 	for _, s := range servers {
+		select {
+		case <-ctx.Done():
+			slog.Info("backup cycle canceled")
+			return
+		default:
+		}
+
 		if !s.Server.Enabled {
 			continue
 		}

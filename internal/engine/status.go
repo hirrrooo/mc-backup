@@ -51,7 +51,7 @@ func (jt *JobTracker) Snapshot() map[string]*JobInfo {
 	return snap
 }
 
-func startStatusServer(addr string, jt *JobTracker) {
+func startStatusServer(addr string, jt *JobTracker, onCancel func()) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -60,6 +60,15 @@ func startStatusServer(addr string, jt *JobTracker) {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		onCancel()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("canceled"))
 	})
 
 	go func() {
