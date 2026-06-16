@@ -98,7 +98,7 @@ func checkNASReady(ctx context.Context, nas NASConfig) error {
 	sentinel := fmt.Sprintf("%s/.nas-ready", nas.DestRoot)
 	args := sshBaseArgs(nas)
 	args = append(args, fmt.Sprintf("%s@%s", nas.SSHUser, nas.SSHHost),
-		fmt.Sprintf("test -f %s", sentinel),
+		nasReadyCommand(nas),
 	)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	if err := cmd.Run(); err != nil {
@@ -107,10 +107,18 @@ func checkNASReady(ctx context.Context, nas NASConfig) error {
 	return nil
 }
 
+func nasReadyCommand(nas NASConfig) string {
+	return fmt.Sprintf("test -f %s", shellQuote(fmt.Sprintf("%s/.nas-ready", nas.DestRoot)))
+}
+
+func nasMkdirCommand(path string) string {
+	return fmt.Sprintf("mkdir -p %s", shellQuote(path))
+}
+
 func ensureNASDir(ctx context.Context, nas NASConfig, path string) error {
 	args := sshBaseArgs(nas)
 	args = append(args, fmt.Sprintf("%s@%s", nas.SSHUser, nas.SSHHost),
-		fmt.Sprintf("mkdir -p %s", path),
+		nasMkdirCommand(path),
 	)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	return cmd.Run()
