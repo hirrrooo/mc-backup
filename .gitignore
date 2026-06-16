@@ -6,3 +6,5 @@ mc-backup
 .DS_Store
 .claude
 .worktrees/
+docs/superpowers/plans/
+docs/superpowers/specs/
