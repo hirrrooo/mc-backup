@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -21,6 +22,33 @@ var defaultConfigPaths = []string{
 }
 
 var usageOutput io.Writer = os.Stderr
+
+var repoURL = "" // set via -ldflags
+
+var osUserHomeDir = os.UserHomeDir
+
+var osExecutable = os.Executable
+
+var ensureRepo = func(cacheDir, url string) (string, error) {
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		fmt.Printf("Cloning %s into %s\n", url, cacheDir)
+		cmd := exec.Command("git", "clone", url, cacheDir)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("clone: %w", err)
+		}
+	} else {
+		fmt.Printf("Updating cached repo at %s\n", cacheDir)
+		cmd := exec.Command("git", "-C", cacheDir, "pull", "--ff-only")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("pull: %w", err)
+		}
+	}
+	return cacheDir, nil
+}
 
 var findRepoRoot = func() (string, error) {
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
@@ -201,19 +229,35 @@ func updateCmd() {
 }
 
 func runUpdate() error {
-	repoRoot, err := findRepoRoot()
+	home, err := osUserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	cacheDir := filepath.Join(home, ".cache", "mc-backup", "source")
+
+	if repoURL == "" {
+		return errors.New("update requires a built binary with embedded repo URL; use ./update.sh from the source repo instead")
+	}
+	repoRoot, err := ensureRepo(cacheDir, repoURL)
 	if err != nil {
 		return err
 	}
+
+	execPath, err := osExecutable()
+	if err != nil {
+		return fmt.Errorf("cannot determine binary path: %w", err)
+	}
+	tmpBin := execPath + ".new"
 
 	steps := []struct {
 		name    string
 		command string
 		args    []string
 	}{
-		{"Pulling latest source", "git", []string{"pull", "--ff-only"}},
-		{"Installing mc-backup", "sudo", []string{"make", "install"}},
-		{"Restarting mc-backup service", "sudo", []string{"systemctl", "restart", "mc-backup"}},
+		{"Stopping mc-backup service", "sudo", []string{"systemctl", "stop", "mc-backup"}},
+		{"Building mc-backup", "go", []string{"build", "-ldflags", fmt.Sprintf("-X main.repoURL=%s", repoURL), "-o", tmpBin, "./cmd/mc-backup"}},
+		{"Installing mc-backup", "sudo", []string{"mv", tmpBin, execPath}},
+		{"Starting mc-backup service", "sudo", []string{"systemctl", "start", "mc-backup"}},
 		{"mc-backup service status", "systemctl", []string{"status", "mc-backup", "--no-pager"}},
 	}
 

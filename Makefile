@@ -7,11 +7,12 @@ CONFDIR  := /etc/mc-backup
 SERVICEDIR := /etc/systemd/system
 INSTALL_USER_HOME = $(or $(shell if [ -n "$(SUDO_USER)" ] && [ "$(SUDO_USER)" != "root" ]; then getent passwd "$(SUDO_USER)" | cut -d: -f6; else printf '%s' "$(HOME)"; fi),$(HOME))
 USER_CONFDIR = $(INSTALL_USER_HOME)/.config/mc-backup
+REPO_URL ?= https://github.com/anomalyco/mc-backup
 
 .PHONY: build install uninstall clean
 
 build:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(BINARY) ./cmd/mc-backup
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags "-X main.repoURL=$(REPO_URL)" -o $(BINARY) ./cmd/mc-backup
 
 install: build
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(CONFDIR)" "$(USER_CONFDIR)"
