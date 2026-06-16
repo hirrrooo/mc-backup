@@ -5,4 +5,4 @@ mc-backup
 *~
 .DS_Store
 .claude
-
+.worktrees/
