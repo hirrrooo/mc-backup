@@ -42,8 +42,8 @@ func TestUpdateCmdCachesRepoAndRunsSteps(t *testing.T) {
 
 	want := []string{
 		"ensureRepo:/home/test/.cache/mc-backup/source",
-		"Stopping mc-backup service:sudo systemctl stop mc-backup",
 		"Building mc-backup:go build -ldflags -X main.repoURL=https://github.com/hirrrooo/mc-backup.git -o /usr/local/bin/mc-backup.new ./cmd/mc-backup",
+		"Stopping mc-backup service:sudo systemctl stop mc-backup",
 		"Installing mc-backup:sudo mv /usr/local/bin/mc-backup.new /usr/local/bin/mc-backup",
 		"Starting mc-backup service:sudo systemctl start mc-backup",
 		"mc-backup service status:systemctl status mc-backup --no-pager",

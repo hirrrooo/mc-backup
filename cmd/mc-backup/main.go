@@ -254,8 +254,8 @@ func runUpdate() error {
 		command string
 		args    []string
 	}{
-		{"Stopping mc-backup service", "sudo", []string{"systemctl", "stop", "mc-backup"}},
 		{"Building mc-backup", "go", []string{"build", "-ldflags", fmt.Sprintf("-X main.repoURL=%s", repoURL), "-o", tmpBin, "./cmd/mc-backup"}},
+		{"Stopping mc-backup service", "sudo", []string{"systemctl", "stop", "mc-backup"}},
 		{"Installing mc-backup", "sudo", []string{"mv", tmpBin, execPath}},
 		{"Starting mc-backup service", "sudo", []string{"systemctl", "start", "mc-backup"}},
 		{"mc-backup service status", "systemctl", []string{"status", "mc-backup", "--no-pager"}},
