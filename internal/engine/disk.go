@@ -14,7 +14,7 @@ func diskUsagePct(path string) (float64, error) {
 		return 0, err
 	}
 	total := stat.Blocks * uint64(stat.Bsize)
-	free := stat.Bfree * uint64(stat.Bsize)
+	free := stat.Bavail * uint64(stat.Bsize)
 	used := total - free
 	if total == 0 {
 		return 0, nil
