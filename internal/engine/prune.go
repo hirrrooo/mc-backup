@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 
@@ -75,8 +74,8 @@ func runSSH(ctx context.Context, nas NASConfig, remoteCmd string) error {
 	args = append(args, remoteCmd)
 
 	slog.Debug("prune: running SSH", "args", args)
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd := commandRunner.CommandContext(ctx, args[0], args[1:]...)
+	cmd.SetStdout(os.Stdout)
+	cmd.SetStderr(os.Stderr)
 	return cmd.Run()
 }
