@@ -132,7 +132,7 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 		nasArgs := sshBaseArgs(cfg.NAS)
 		nasArgs = append(nasArgs,
 			fmt.Sprintf("%s@%s", cfg.NAS.SSHUser, cfg.NAS.SSHHost),
-			fmt.Sprintf("ls -dt '%s'/[0-9]*-[0-9]* 2>/dev/null | head -1", nasDir),
+			latestNASSnapshotCommand(nasDir),
 		)
 		cmd := commandRunner.CommandContext(ctx, nasArgs[0], nasArgs[1:]...)
 		if out, err := cmd.Output(); err == nil {
@@ -157,6 +157,10 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 				"server", s.Name, "local", latestLocal, "nas", latestNAS)
 		}
 	}
+}
+
+func latestNASSnapshotCommand(nasDir string) string {
+	return fmt.Sprintf("ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | head -1", shellQuote(nasDir))
 }
 
 func (d *Daemon) saveAutoServers(cfg *Config) {
