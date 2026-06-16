@@ -7,7 +7,7 @@ CONFDIR  := /etc/mc-backup
 SERVICEDIR := /etc/systemd/system
 INSTALL_USER_HOME = $(or $(shell if [ -n "$(SUDO_USER)" ] && [ "$(SUDO_USER)" != "root" ]; then getent passwd "$(SUDO_USER)" | cut -d: -f6; else printf '%s' "$(HOME)"; fi),$(HOME))
 USER_CONFDIR = $(INSTALL_USER_HOME)/.config/mc-backup
-REPO_URL ?= https://github.com/anomalyco/mc-backup
+REPO_URL ?= https://github.com/hirrrooo/mc-backup.git
 
 .PHONY: build install uninstall clean
 
