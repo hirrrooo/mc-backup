@@ -9,6 +9,10 @@
 
 The current `update` command clones/updates a git repo into `~/.cache/mc-backup/source` then runs `go build` on the production host. This requires both `git` and a Go toolchain on the production machine — heavyweight dependencies for an in-place updater. A pre-built binary artifact is simpler and faster.
 
+## Prerequisites (Out of Scope)
+
+This spec covers the **client side** (the `update` command). The update cannot succeed without a **CI/CD pipeline** that builds the binary and uploads it as a GitHub Release asset named `mc-backup-linux-amd64`. That pipeline is a separate deliverable and will be specified in its own design.
+
 ## Design
 
 ### Artifact Source
