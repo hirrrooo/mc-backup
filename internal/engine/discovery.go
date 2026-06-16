@@ -1,10 +1,10 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -52,7 +52,7 @@ func detectContainerName(serverDir, serverName string) string {
 		if _, err := os.Stat(composePath); os.IsNotExist(err) {
 			continue
 		}
-		cmd := exec.Command("docker", "compose", "-f", composePath, "ps", "--format", "json")
+		cmd := commandRunner.CommandContext(context.Background(), "docker", "compose", "-f", composePath, "ps", "--format", "json")
 		out, err := cmd.Output()
 		if err != nil {
 			slog.Warn("discovery: docker compose ps failed", "file", composePath, "error", err)
@@ -70,7 +70,7 @@ func detectContainerName(serverDir, serverName string) string {
 		}
 	}
 
-	cmd := exec.Command("docker", "ps", "--filter", fmt.Sprintf("name=^/%s-", serverName), "--format", "{{.Names}}")
+	cmd := commandRunner.CommandContext(context.Background(), "docker", "ps", "--filter", fmt.Sprintf("name=^/%s-", serverName), "--format", "{{.Names}}")
 	out, err := cmd.Output()
 	if err == nil {
 		names := strings.Fields(string(out))
@@ -85,7 +85,7 @@ func detectContainerName(serverDir, serverName string) string {
 }
 
 func containerUptime(container string) (time.Duration, error) {
-	cmd := exec.Command("docker", "inspect", "--format", "{{.State.StartedAt}}", container)
+	cmd := commandRunner.CommandContext(context.Background(), "docker", "inspect", "--format", "{{.State.StartedAt}}", container)
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("inspect %s: %w", container, err)
@@ -99,7 +99,7 @@ func containerUptime(container string) (time.Duration, error) {
 }
 
 func containerRunning(container string) bool {
-	cmd := exec.Command("docker", "ps", "--filter", fmt.Sprintf("name=^/%s$", container), "--format", "{{.Names}}")
+	cmd := commandRunner.CommandContext(context.Background(), "docker", "ps", "--filter", fmt.Sprintf("name=^/%s$", container), "--format", "{{.Names}}")
 	out, err := cmd.Output()
 	if err != nil {
 		return false

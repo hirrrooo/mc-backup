@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -135,7 +134,7 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 			fmt.Sprintf("%s@%s", cfg.NAS.SSHUser, cfg.NAS.SSHHost),
 			fmt.Sprintf("ls -dt '%s'/[0-9]*-[0-9]* 2>/dev/null | head -1", nasDir),
 		)
-		cmd := exec.CommandContext(ctx, nasArgs[0], nasArgs[1:]...)
+		cmd := commandRunner.CommandContext(ctx, nasArgs[0], nasArgs[1:]...)
 		if out, err := cmd.Output(); err == nil {
 			nasSnap := strings.TrimSpace(string(out))
 			if nasSnap != "" {

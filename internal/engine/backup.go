@@ -100,7 +100,7 @@ func checkNASReady(ctx context.Context, nas NASConfig) error {
 	args = append(args, fmt.Sprintf("%s@%s", nas.SSHUser, nas.SSHHost),
 		nasReadyCommand(nas),
 	)
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd := commandRunner.CommandContext(ctx, args[0], args[1:]...)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("NAS sentinel %s not found", sentinel)
 	}
@@ -120,7 +120,7 @@ func ensureNASDir(ctx context.Context, nas NASConfig, path string) error {
 	args = append(args, fmt.Sprintf("%s@%s", nas.SSHUser, nas.SSHHost),
 		nasMkdirCommand(path),
 	)
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd := commandRunner.CommandContext(ctx, args[0], args[1:]...)
 	return cmd.Run()
 }
 
@@ -189,7 +189,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 		return "", false, fmt.Errorf("save-all flush: %w", err)
 	}
 
-	exec.Command("sync").Run()
+	commandRunner.CommandContext(context.Background(), "sync").Run()
 
 	ts := time.Now().Format("20060102-1504")
 
