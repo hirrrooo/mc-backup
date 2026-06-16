@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -61,9 +60,9 @@ func (ae *ArchiveEngine) migrateOne(ctx context.Context, watch WatchConfig, serv
 	checkArgs := sshBaseArgs(ae.cfg.NAS)
 	checkArgs = append(checkArgs,
 		fmt.Sprintf("%s@%s", ae.cfg.NAS.SSHUser, ae.cfg.NAS.SSHHost),
-		fmt.Sprintf("test -f %s", nasSentinel),
+		nasReadyCommand(ae.cfg.NAS),
 	)
-	cmd := exec.CommandContext(ctx, checkArgs[0], checkArgs[1:]...)
+	cmd := commandRunner.CommandContext(ctx, checkArgs[0], checkArgs[1:]...)
 	if err := cmd.Run(); err != nil {
 		slog.Warn("archive: NAS sentinel not found, skipping", "sentinel", nasSentinel)
 		return

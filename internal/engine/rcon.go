@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +23,7 @@ func rconCommand(container, password, cmd string) []string {
 func runRcon(ctx context.Context, container, password, command string, retries int, retryInterval time.Duration) error {
 	args := rconCommand(container, password, command)
 	for i := 0; i < retries; i++ {
-		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd := commandRunner.CommandContext(ctx, args[0], args[1:]...)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			return nil
@@ -47,7 +46,7 @@ func runRcon(ctx context.Context, container, password, command string, retries i
 
 func rconOutput(ctx context.Context, container, password, command string) (string, error) {
 	args := rconCommand(container, password, command)
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd := commandRunner.CommandContext(ctx, args[0], args[1:]...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

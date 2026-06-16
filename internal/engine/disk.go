@@ -1,8 +1,8 @@
 package engine
 
 import (
+	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,7 +31,7 @@ func totalDiskSpace(path string) uint64 {
 }
 
 func dirSize(path string) (int64, error) {
-	cmd := exec.Command("du", "-sb", path)
+	cmd := commandRunner.CommandContext(context.Background(), "du", "-sb", path)
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, err

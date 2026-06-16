@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 
@@ -43,24 +42,30 @@ func pruneNASByDays(ctx context.Context, nas NASConfig, destRoot, namespace, ser
 	if days <= 0 {
 		return nil
 	}
+	return runSSH(ctx, nas, pruneNASByDaysCommand(destRoot, namespace, serverName, days))
+}
+
+func pruneNASByDaysCommand(destRoot, namespace, serverName string, days int) string {
 	destDir := fmt.Sprintf("%s/%s/%s", destRoot, namespace, serverName)
-	remoteCmd := fmt.Sprintf(
+	return fmt.Sprintf(
 		"find %s -maxdepth 1 -type d -regex '.*/[0-9]\\{8\\}-[0-9]\\{4\\}' -mtime +%d -exec rm -rf {} +",
-		destDir, days,
+		shellQuote(destDir), days,
 	)
-	return runSSH(ctx, nas, remoteCmd)
 }
 
 func pruneNASByCount(ctx context.Context, nas NASConfig, destRoot, namespace, serverName string, count int) error {
 	if count <= 0 {
 		return nil
 	}
+	return runSSH(ctx, nas, pruneNASByCountCommand(destRoot, namespace, serverName, count))
+}
+
+func pruneNASByCountCommand(destRoot, namespace, serverName string, count int) string {
 	destDir := fmt.Sprintf("%s/%s/%s", destRoot, namespace, serverName)
-	remoteCmd := fmt.Sprintf(
+	return fmt.Sprintf(
 		"ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | tail -n +%d | xargs rm -rf",
-		destDir, count+1,
+		shellQuote(destDir), count+1,
 	)
-	return runSSH(ctx, nas, remoteCmd)
 }
 
 func runSSH(ctx context.Context, nas NASConfig, remoteCmd string) error {
@@ -69,8 +74,8 @@ func runSSH(ctx context.Context, nas NASConfig, remoteCmd string) error {
 	args = append(args, remoteCmd)
 
 	slog.Debug("prune: running SSH", "args", args)
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd := commandRunner.CommandContext(ctx, args[0], args[1:]...)
+	cmd.SetStdout(os.Stdout)
+	cmd.SetStderr(os.Stderr)
 	return cmd.Run()
 }
