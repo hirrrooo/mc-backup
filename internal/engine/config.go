@@ -58,12 +58,12 @@ func (w WatchConfig) backupDir(serverName string) string {
 }
 
 type ServerConfig struct {
-	Enabled             bool   `toml:"enabled"`
-	SSHOnly             bool   `toml:"ssh_only"`
-	ContainerName       string `toml:"container_name"`
-	RconPassword        string `toml:"rcon_password"`
-	DataDir             string `toml:"data_dir"`
-	PauseIfNoPlayers    bool   `toml:"pause_if_no_players"`
+	Enabled          bool   `toml:"enabled"`
+	SSHOnly          bool   `toml:"ssh_only"`
+	ContainerName    string `toml:"container_name"`
+	RconPassword     string `toml:"rcon_password"`
+	DataDir          string `toml:"data_dir"`
+	PauseIfNoPlayers bool   `toml:"pause_if_no_players"`
 }
 
 type Config struct {
@@ -334,23 +334,23 @@ func watchConfig(path string, ac *atomicConfig) error {
 				if name != base && name != autoBase {
 					continue
 				}
-				if event.Op&fsnotify.Write == 0 && event.Op&fsnotify.Create == 0 {
-				continue
-			}
-			slog.Info("config file changed, reloading", "path", path)
-			oldCfg := ac.Load()
-			cfg, err := LoadConfig(path)
-			if err != nil {
-				slog.Error("config reload failed", "error", err)
-				continue
-			}
-			if oldCfg != nil && oldCfg.Global.ListenAddr != cfg.Global.ListenAddr {
-				slog.Warn("listen_addr changed, requires restart to take effect",
-					"old", oldCfg.Global.ListenAddr, "new", cfg.Global.ListenAddr)
-			}
-			ac.Store(cfg)
-			slog.Info("config reloaded successfully")
-		case err, ok := <-watcher.Errors:
+				if event.Op&fsnotify.Write == 0 && event.Op&fsnotify.Create == 0 && event.Op&fsnotify.Rename == 0 {
+					continue
+				}
+				slog.Info("config file changed, reloading", "path", path)
+				oldCfg := ac.Load()
+				cfg, err := LoadConfig(path)
+				if err != nil {
+					slog.Error("config reload failed", "error", err)
+					continue
+				}
+				if oldCfg != nil && oldCfg.Global.ListenAddr != cfg.Global.ListenAddr {
+					slog.Warn("listen_addr changed, requires restart to take effect",
+						"old", oldCfg.Global.ListenAddr, "new", cfg.Global.ListenAddr)
+				}
+				ac.Store(cfg)
+				slog.Info("config reloaded successfully")
+			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
@@ -528,12 +528,32 @@ func writeLastSnapshot(cfgPath, server, localPath, nasPath string) {
 func writeLastSnapshotAt(cfgPath, server, localPath, nasPath string, t time.Time) {
 	m := readLastSnapshots(cfgPath)
 	m[server] = lastSnapshotEntry{Time: t, Local: localPath, NAS: nasPath}
-	f, err := os.Create(lastBackupPath(cfgPath))
+	dst := lastBackupPath(cfgPath)
+	f, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*.tmp")
 	if err != nil {
+		slog.Warn("failed to create last-backup temp file", "path", dst, "error", err)
 		return
 	}
-	defer f.Close()
+	tmp := f.Name()
+	defer os.Remove(tmp)
+
 	for name, e := range m {
-		fmt.Fprintf(f, "%s=%d=%s=%s\n", name, e.Time.Unix(), e.Local, e.NAS)
+		if _, err := fmt.Fprintf(f, "%s=%d=%s=%s\n", name, e.Time.Unix(), e.Local, e.NAS); err != nil {
+			slog.Warn("failed to write last-backup temp file", "path", tmp, "error", err)
+			f.Close()
+			return
+		}
+	}
+	if err := f.Sync(); err != nil {
+		slog.Warn("failed to sync last-backup temp file", "path", tmp, "error", err)
+		f.Close()
+		return
+	}
+	if err := f.Close(); err != nil {
+		slog.Warn("failed to close last-backup temp file", "path", tmp, "error", err)
+		return
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		slog.Warn("failed to replace last-backup file", "src", tmp, "dst", dst, "error", err)
 	}
 }

@@ -24,12 +24,12 @@ func sshBaseArgs(nas NASConfig) []string {
 	if nas.SSHKey != "" {
 		args = append(args, "-i", os.ExpandEnv(nas.SSHKey))
 	}
-	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
+	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3")
 	return args
 }
 
 func localRsyncArgs(dataDir, prevBackup, destDir string, excludes []string) []string {
-	args := []string{"rsync", "-a"}
+	args := []string{"rsync", "-a", "--timeout=300"}
 	if prevBackup != "" {
 		args = append(args, fmt.Sprintf("--link-dest=%s", prevBackup))
 	}
@@ -42,7 +42,7 @@ func localRsyncArgs(dataDir, prevBackup, destDir string, excludes []string) []st
 
 func nasRsyncArgs(dataDir, prevBackup, destDir string, nas NASConfig, maxMbps float64, excludes []string) []string {
 	sshRemote := fmt.Sprintf("%s@%s", nas.SSHUser, nas.SSHHost)
-	args := []string{"rsync", "-a"}
+	args := []string{"rsync", "-a", "--timeout=300"}
 	if maxMbps > 0 {
 		args = append(args, fmt.Sprintf("--bwlimit=%d", int(maxMbps*1024)))
 	}
@@ -85,6 +85,7 @@ func runRsync(ctx context.Context, args []string, onProgress func(bytesMoved, to
 			wg.Done()
 		}()
 		err = cmd.Wait()
+		stdout.Close()
 		wg.Wait()
 		return err
 	}
@@ -172,7 +173,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 
 	defer func() {
 		slog.Info("re-enabling autosave", "server", serverName)
-		detachedCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		detachedCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		if err := runRcon(detachedCtx, container, server.RconPassword, "save-on", rconRetries, rconRetryInterval); err != nil {
 			saveOnErr := fmt.Errorf("FATAL: save-on failed for %s: %w", serverName, err)

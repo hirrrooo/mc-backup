@@ -424,8 +424,12 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 		ae.ArchiveIfNeeded(ctx, s.Watch, s.Name)
 
 		pruneRet := cfg.Retention
-		pruneNASByDays(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneDays)
-		pruneNASByCount(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneCount)
+		if err := pruneNASByDays(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneDays); err != nil {
+			slog.Error("NAS prune by days failed", "server", s.Name, "error", err)
+		}
+		if err := pruneNASByCount(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneCount); err != nil {
+			slog.Error("NAS prune by count failed", "server", s.Name, "error", err)
+		}
 	}
 
 	slog.Info("backup cycle complete", "duration", time.Since(startTime).Round(time.Second))
