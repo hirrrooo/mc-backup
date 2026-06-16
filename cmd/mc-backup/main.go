@@ -3,10 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"mc-backup/internal/engine"
 )
@@ -15,6 +18,27 @@ const version = "0.1.0"
 
 var defaultConfigPaths = []string{
 	"/etc/mc-backup/config.toml",
+}
+
+var usageOutput io.Writer = os.Stderr
+
+var findRepoRoot = func() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("not inside a git repository")
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+var runUpdateStep = func(dir, name string, command string, args ...string) error {
+	fmt.Printf("\n==> %s\n", name)
+	cmd := exec.Command(command, args...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
 }
 
 func findConfig() string {
@@ -51,6 +75,8 @@ func main() {
 		postCmd("scan")
 	case "cancel":
 		postCmd("cancel")
+	case "update":
+		updateCmd()
 	case "version", "--version", "-v":
 		fmt.Printf("mc-backup %s\n", version)
 	default:
@@ -139,7 +165,7 @@ func postCmd(endpoint string) {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, `mc-backup %s — Minecraft server backup daemon
+	fmt.Fprintf(usageOutput, `mc-backup %s — Minecraft server backup daemon
 
 Usage: mc-backup <command> [flags]
 
@@ -150,6 +176,7 @@ Commands:
   scan       Trigger immediate server discovery
   cancel     Abort the current backup cycle
   config     Read or write config values
+  update     Pull latest source, install, and restart service
   version    Print version
 
 run flags:
@@ -164,6 +191,39 @@ Config files: /etc/mc-backup/config.toml, ~/.config/mc-backup/config.toml
 Environment overrides: MC_BACKUP_<SECTION>_<KEY> (e.g. MC_BACKUP_GLOBAL_MAX_MBPS=20)
 
 `, version)
+}
+
+func updateCmd() {
+	if err := runUpdate(); err != nil {
+		fmt.Fprintf(os.Stderr, "update failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runUpdate() error {
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	steps := []struct {
+		name    string
+		command string
+		args    []string
+	}{
+		{"Pulling latest source", "git", []string{"pull", "--ff-only"}},
+		{"Installing mc-backup", "sudo", []string{"make", "install"}},
+		{"Restarting mc-backup service", "sudo", []string{"systemctl", "restart", "mc-backup"}},
+		{"mc-backup service status", "systemctl", []string{"status", "mc-backup", "--no-pager"}},
+	}
+
+	for _, step := range steps {
+		if err := runUpdateStep(repoRoot, step.name, step.command, step.args...); err != nil {
+			return fmt.Errorf("%s: %w", step.name, err)
+		}
+	}
+
+	return nil
 }
 
 func runCmd() {
