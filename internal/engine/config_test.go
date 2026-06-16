@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -196,6 +197,63 @@ rcon_password = "filepass"
 	}
 	if !cfg.Servers["my_creative"].PauseIfNoPlayers {
 		t.Error("PauseIfNoPlayers: expected true")
+	}
+}
+
+func TestSetConfigValueDoesNotDuplicateAutoServers(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+
+	os.WriteFile(cfgPath, []byte("[global]\nmax_mbps = 40.0\n"), 0644)
+	os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"secret\"\n"), 0644)
+
+	if err := SetConfigValue(cfgPath, "global.max_mbps", "20"); err != nil {
+		t.Fatalf("SetConfigValue: %v", err)
+	}
+
+	mainBytes, _ := os.ReadFile(cfgPath)
+	if strings.Contains(string(mainBytes), "creative") {
+		t.Fatalf("auto server leaked into main config:\n%s", mainBytes)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Servers["creative"].RconPassword != "secret" {
+		t.Errorf("auto server lost rcon_password: %#v", cfg.Servers["creative"])
+	}
+	if cfg.Global.MaxMBps != 20 {
+		t.Errorf("max_mbps not applied: %v", cfg.Global.MaxMBps)
+	}
+}
+
+func TestSetConfigValueUpdatesAutoServerInAutoFile(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+
+	os.WriteFile(cfgPath, []byte("[global]\n"), 0644)
+	os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"old\"\n"), 0644)
+
+	if err := SetConfigValue(cfgPath, "server.creative.rcon_password", "new"); err != nil {
+		t.Fatalf("SetConfigValue: %v", err)
+	}
+
+	mainBytes, _ := os.ReadFile(cfgPath)
+	if strings.Contains(string(mainBytes), "creative") {
+		t.Fatalf("auto server written to main config:\n%s", mainBytes)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Servers["creative"].RconPassword != "new" {
+		t.Errorf("rcon_password not updated: %#v", cfg.Servers["creative"])
+	}
+	if cfg.Servers["creative"].ContainerName != "creative-mc-1" {
+		t.Errorf("container_name lost: %#v", cfg.Servers["creative"])
 	}
 }
 

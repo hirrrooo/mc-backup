@@ -121,19 +121,56 @@ func loadConfigFile(path string) (*Config, error) {
 }
 
 func SaveConfig(path string, cfg *Config) error {
-	f, err := os.Create(path)
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
-		return fmt.Errorf("create %s: %w", path, err)
+		return fmt.Errorf("create temp for %s: %w", path, err)
 	}
-	defer f.Close()
+	tmp := f.Name()
+	defer os.Remove(tmp)
 
 	enc := toml.NewEncoder(f)
 	enc.Indent = ""
-	return enc.Encode(cfg)
+	if err := enc.Encode(cfg); err != nil {
+		f.Close()
+		return fmt.Errorf("encode %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replace %s: %w", path, err)
+	}
+	return nil
 }
 
 func autoServersPath(cfgPath string) string {
 	return strings.TrimSuffix(cfgPath, ".toml") + "-auto.toml"
+}
+
+// saveSplit writes cfg back to disk, sending auto-provisioned servers (those
+// present in <path>-auto.toml) to the auto file and everything else to the
+// main config. This prevents auto servers from being duplicated into the main
+// config and prevents their auto-only fields from being lost.
+func saveSplit(path string, cfg *Config) error {
+	autoNames := loadAutoServerNames(path)
+
+	main := cloneConfig(cfg)
+	auto := make(map[string]ServerConfig)
+	for name := range autoNames {
+		if s, ok := main.Servers[name]; ok {
+			auto[name] = s
+			delete(main.Servers, name)
+		}
+	}
+	if err := SaveConfig(path, main); err != nil {
+		return err
+	}
+	return SaveAutoServers(path, auto)
 }
 
 func cloneConfig(src *Config) *Config {
@@ -444,7 +481,7 @@ func SetConfigValue(path, key, val string) error {
 	default:
 		return fmt.Errorf("unknown section: %s", section)
 	}
-	return SaveConfig(path, cfg)
+	return saveSplit(path, cfg)
 }
 
 func getGlobalField(g GlobalConfig, key string) string {
