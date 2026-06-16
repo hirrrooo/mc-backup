@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestParseConfig(t *testing.T) {
@@ -170,5 +171,44 @@ ssh_host = "nas.local"
 	}
 	if s.ContainerName != "new-server-mc-1" {
 		t.Errorf("new server not persisted correctly: got %q", s.ContainerName)
+	}
+}
+
+func TestLastSnapshotsRoundTripMultipleServers(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	firstTime := time.Unix(1718107200, 0)
+	secondTime := time.Unix(1718110800, 0)
+
+	writeLastSnapshotAt(cfgPath, "creative", "/local/creative/20250611-1200", "/nas/creative/20250611-1200", firstTime)
+	writeLastSnapshotAt(cfgPath, "survival", "/local/survival/20250611-1300", "", secondTime)
+
+	got := readLastSnapshots(cfgPath)
+	if len(got) != 2 {
+		t.Fatalf("readLastSnapshots returned %d entries, want 2", len(got))
+	}
+	if got["creative"].Time.Unix() != firstTime.Unix() || got["creative"].Local != "/local/creative/20250611-1200" || got["creative"].NAS != "/nas/creative/20250611-1200" {
+		t.Errorf("creative snapshot = %#v", got["creative"])
+	}
+	if got["survival"].Time.Unix() != secondTime.Unix() || got["survival"].Local != "/local/survival/20250611-1300" || got["survival"].NAS != "" {
+		t.Errorf("survival snapshot = %#v", got["survival"])
+	}
+}
+
+func TestReadLastSnapshotsSkipsMalformedLines(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	lastPath := lastBackupPath(cfgPath)
+	content := []byte("missing-timestamp\ncreative=not-a-number=/local=/nas\nsurvival=1718110800=/local/survival=\n")
+	if err := os.WriteFile(lastPath, content, 0644); err != nil {
+		t.Fatalf("write last-backup: %v", err)
+	}
+
+	got := readLastSnapshots(cfgPath)
+	if len(got) != 1 {
+		t.Fatalf("readLastSnapshots returned %d entries, want 1", len(got))
+	}
+	if got["survival"].Local != "/local/survival" {
+		t.Errorf("survival local path = %q", got["survival"].Local)
 	}
 }

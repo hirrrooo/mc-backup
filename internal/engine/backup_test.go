@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -11,11 +12,15 @@ func TestLocalRsyncArgs(t *testing.T) {
 		t.Errorf("expected rsync, got %q", args[0])
 	}
 	hasLinkDest := false
+	hasTimeout := false
 	hasSrc := false
 	hasDest := false
 	for _, a := range args {
 		if strings.HasPrefix(a, "--link-dest=") {
 			hasLinkDest = true
+		}
+		if a == "--timeout=300" {
+			hasTimeout = true
 		}
 		if a == "/opt/mc/data" {
 			hasSrc = true
@@ -26,6 +31,9 @@ func TestLocalRsyncArgs(t *testing.T) {
 	}
 	if !hasLinkDest {
 		t.Error("missing --link-dest flag")
+	}
+	if !hasTimeout {
+		t.Error("missing --timeout flag")
 	}
 	if !hasSrc || !hasDest {
 		t.Error("missing source or destination")
@@ -40,19 +48,33 @@ func TestNASRsyncArgs(t *testing.T) {
 	}
 	hasBwLimit := false
 	hasSSH := false
+	hasTimeout := false
+	hasKeepalive := false
 	for _, a := range args {
 		if strings.HasPrefix(a, "--bwlimit=") {
 			hasBwLimit = true
 		}
+		if a == "--timeout=300" {
+			hasTimeout = true
+		}
 		if strings.HasPrefix(a, "-e") || strings.Contains(a, "ssh") {
 			hasSSH = true
+		}
+		if strings.Contains(a, "ServerAliveInterval=15") && strings.Contains(a, "ServerAliveCountMax=3") {
+			hasKeepalive = true
 		}
 	}
 	if !hasBwLimit {
 		t.Error("missing --bwlimit flag for NAS rsync")
 	}
+	if !hasTimeout {
+		t.Error("missing --timeout flag for NAS rsync")
+	}
 	if !hasSSH {
 		t.Error("missing SSH remote path")
+	}
+	if !hasKeepalive {
+		t.Error("missing SSH keepalive options")
 	}
 }
 
@@ -87,6 +109,60 @@ func TestParseRsyncProgress(t *testing.T) {
 		if ok != tt.ok || bytes != tt.expectedBytes || total != tt.expectedTotal {
 			t.Errorf("parseRsyncProgress(%q) = (%d, %d, %v), want (%d, %d, %v)",
 				tt.line, bytes, total, ok, tt.expectedBytes, tt.expectedTotal, tt.ok)
+		}
+	}
+}
+
+func TestIsBackupDirRequiresTimestampFormat(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"20250611-1200", true},
+		{"2025061-1200", false},
+		{"20250611_1200", false},
+		{"20250611-120", false},
+		{"20250611-12000", false},
+		{"2025061a-1200", false},
+		{"snapshot-1200", false},
+	}
+
+	for _, tt := range tests {
+		got := isBackupDir(tt.name)
+		if got != tt.want {
+			t.Errorf("isBackupDir(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestStreamRsyncProgressHandlesCarriageReturns(t *testing.T) {
+	input := bytes.NewBufferString("1,000 10% 1.00MB/s\r2,000 20% 1.00MB/s\nnot progress\r3,000 50% 1.00MB/s")
+	var got []struct {
+		bytes int64
+		total int64
+	}
+
+	streamRsyncProgress(input, func(bytesMoved, totalSize int64) {
+		got = append(got, struct {
+			bytes int64
+			total int64
+		}{bytesMoved, totalSize})
+	})
+
+	want := []struct {
+		bytes int64
+		total int64
+	}{
+		{1000, 10000},
+		{2000, 10000},
+		{3000, 6000},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d progress updates, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("progress update %d = %#v, want %#v", i, got[i], want[i])
 		}
 	}
 }
