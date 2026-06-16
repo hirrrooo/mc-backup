@@ -174,6 +174,31 @@ ssh_host = "nas.local"
 	}
 }
 
+func TestEnvOverrideServerNameWithUnderscore(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	content := []byte(`
+[server.my_creative]
+enabled = true
+rcon_password = "filepass"
+`)
+	os.WriteFile(cfgPath, content, 0644)
+
+	t.Setenv("MC_BACKUP_SERVER_MY_CREATIVE_RCON_PASSWORD", "envpass")
+	t.Setenv("MC_BACKUP_SERVER_MY_CREATIVE_PAUSE_IF_NO_PLAYERS", "true")
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Servers["my_creative"].RconPassword != "envpass" {
+		t.Errorf("RconPassword: got %q, want envpass", cfg.Servers["my_creative"].RconPassword)
+	}
+	if !cfg.Servers["my_creative"].PauseIfNoPlayers {
+		t.Error("PauseIfNoPlayers: expected true")
+	}
+}
+
 func TestLastSnapshotsRoundTripMultipleServers(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")

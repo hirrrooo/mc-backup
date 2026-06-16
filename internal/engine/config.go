@@ -201,16 +201,21 @@ func applyEnvOverrides(cfg *Config) {
 			continue
 		}
 		section := parts[2]
-		serverName := ""
-		keyIdx := 3
-		if section == "server" && len(parts) >= 5 {
-			serverName = parts[3]
-			keyIdx = 4
-		}
-		keyParts := parts[keyIdx:]
-		key := strings.Join(keyParts, "_")
 		val := kv[1]
 
+		if section == "server" {
+			name, field, ok := parseServerEnvKey(strings.Join(parts[3:], "_"))
+			if !ok {
+				continue
+			}
+			if s, exists := cfg.Servers[name]; exists {
+				setServerField(&s, field, val)
+				cfg.Servers[name] = s
+			}
+			continue
+		}
+
+		key := strings.Join(parts[3:], "_")
 		switch section {
 		case "global":
 			setGlobalField(&cfg.Global, key, val)
@@ -218,13 +223,6 @@ func applyEnvOverrides(cfg *Config) {
 			setNASField(&cfg.NAS, key, val)
 		case "retention":
 			setRetentionField(&cfg.Retention, key, val)
-		case "server":
-			if serverName != "" {
-				if s, ok := cfg.Servers[serverName]; ok {
-					setServerField(&s, key, val)
-					cfg.Servers[serverName] = s
-				}
-			}
 		}
 	}
 }
@@ -295,6 +293,33 @@ func setServerField(s *ServerConfig, key, val string) {
 	case "pause_if_no_players":
 		s.PauseIfNoPlayers = strings.ToLower(val) == "true"
 	}
+}
+
+var serverFieldKeys = []string{
+	"enabled",
+	"ssh_only",
+	"container_name",
+	"rcon_password",
+	"data_dir",
+	"pause_if_no_players",
+}
+
+// parseServerEnvKey splits the lowercased remainder of a
+// MC_BACKUP_SERVER_<NAME>_<FIELD> variable (everything after "server_") into a
+// server name and field by matching a known field as the suffix. This is
+// unambiguous because no field key is a suffix of another.
+func parseServerEnvKey(rest string) (name, field string, ok bool) {
+	for _, f := range serverFieldKeys {
+		suffix := "_" + f
+		if strings.HasSuffix(rest, suffix) {
+			name = strings.TrimSuffix(rest, suffix)
+			if name == "" {
+				return "", "", false
+			}
+			return name, f, true
+		}
+	}
+	return "", "", false
 }
 
 type atomicConfig struct {
