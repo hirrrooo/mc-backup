@@ -30,8 +30,13 @@ func totalDiskSpace(path string) uint64 {
 	return stat.Blocks * uint64(stat.Bsize)
 }
 
-func dirSize(path string) (int64, error) {
-	cmd := commandRunner.CommandContext(context.Background(), "du", "-sb", path)
+func dirSize(path string, excludes []string) (int64, error) {
+	args := []string{"du", "-sb"}
+	for _, ex := range excludes {
+		args = append(args, "--exclude="+ex)
+	}
+	args = append(args, path)
+	cmd := commandRunner.CommandContext(context.Background(), args[0], args[1:]...)
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, err

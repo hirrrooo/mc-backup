@@ -198,7 +198,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 	if !useSSH {
 		backupDir := watch.backupDir(serverName)
 		if pct, err := diskUsagePct(backupDir); err == nil {
-			estSize, _ := dirSize(dataDir)
+			estSize, _ := dirSize(dataDir, excludes)
 			totalSpace := totalDiskSpace(backupDir)
 			if totalSpace > 0 {
 				neededPct := (float64(estSize) / float64(totalSpace)) * 100.0

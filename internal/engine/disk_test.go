@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"context"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -23,11 +25,26 @@ func TestDirSize(t *testing.T) {
 	os.WriteFile(tmp+"/a.txt", []byte("hello"), 0644)
 	os.WriteFile(tmp+"/b.txt", []byte("world"), 0644)
 
-	size, err := dirSize(tmp)
+	size, err := dirSize(tmp, nil)
 	if err != nil {
 		t.Fatalf("dirSize failed: %v", err)
 	}
 	if size < 10 {
 		t.Errorf("dirSize too small: %d", size)
+	}
+}
+
+func TestDirSizePassesExcludesToDu(t *testing.T) {
+	var gotArgs []string
+	withCommandRunner(commandRunnerFunc(func(ctx context.Context, name string, args ...string) command {
+		gotArgs = append([]string{name}, args...)
+		return fakeCommand{}
+	}), func() {
+		dirSize("/data", []string{"*.jar", "cache"})
+	})
+
+	joined := strings.Join(gotArgs, " ")
+	if !strings.Contains(joined, "--exclude=*.jar") || !strings.Contains(joined, "--exclude=cache") {
+		t.Fatalf("du args missing excludes: %v", gotArgs)
 	}
 }
