@@ -25,6 +25,7 @@ type Daemon struct {
 	jobTracker  *JobTracker
 	lastBackups map[string]*lastBackup
 	autoServers map[string]bool
+	autoMu      sync.Mutex
 	cycleMu     sync.Mutex
 	cancelMu    sync.Mutex
 	cancelFn    context.CancelFunc
@@ -163,16 +164,31 @@ func latestNASSnapshotCommand(nasDir string) string {
 	return fmt.Sprintf("ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | head -1", shellQuote(nasDir))
 }
 
-func (d *Daemon) saveAutoServers(cfg *Config) {
+func (d *Daemon) provisionServers(cfg *Config, newServers []struct {
+	Name   string
+	Server ServerConfig
+}) *Config {
+	if len(newServers) == 0 {
+		return cfg
+	}
+	cfg = cloneConfig(cfg)
+	d.autoMu.Lock()
+	for _, ns := range newServers {
+		d.autoServers[ns.Name] = true
+		cfg.Servers[ns.Name] = ns.Server
+	}
 	auto := make(map[string]ServerConfig)
 	for name := range d.autoServers {
 		if s, ok := cfg.Servers[name]; ok {
 			auto[name] = s
 		}
 	}
+	d.autoMu.Unlock()
+
 	if err := SaveAutoServers(d.cfgPath, auto); err != nil {
 		slog.Error("failed to save auto-provisioned config", "error", err)
 	}
+	return cfg
 }
 
 func (d *Daemon) Run() error {
@@ -323,13 +339,8 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 	}
 	startTime := time.Now()
 
+	cfg = d.provisionServers(cfg, newServers)
 	if len(newServers) > 0 {
-		cfg = cloneConfig(cfg)
-		for _, ns := range newServers {
-			d.autoServers[ns.Name] = true
-			cfg.Servers[ns.Name] = ns.Server
-		}
-		d.saveAutoServers(cfg)
 		slog.Info("auto-provisioned new servers in backup cycle")
 	}
 
@@ -439,13 +450,8 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 	cfg := d.ac.Load()
 	_, newServers := discoverServers(cfg.Watch, cfg.Servers)
 
+	cfg = d.provisionServers(cfg, newServers)
 	if len(newServers) > 0 {
-		cfg = cloneConfig(cfg)
-		for _, ns := range newServers {
-			d.autoServers[ns.Name] = true
-			cfg.Servers[ns.Name] = ns.Server
-		}
-		d.saveAutoServers(cfg)
 		slog.Info("new servers discovered, triggering immediate backup cycle")
 		go d.runBackupCycle(ctx, "")
 	}
