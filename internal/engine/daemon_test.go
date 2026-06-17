@@ -38,3 +38,24 @@ func TestProvisionServersConcurrent(t *testing.T) {
 		t.Fatalf("expected 16 auto servers, got %d", got)
 	}
 }
+
+func TestServerMatches(t *testing.T) {
+	cases := []struct {
+		onlyServer, name string
+		want             bool
+	}{
+		{"", "creative", true},
+		{"", "", true},
+		{"creative", "creative", true},
+		{"Creative", "creative", true},
+		{"CREATIVE", "creative", true},
+		{"creative", "Creative", true},
+		{"creative", "survival", false},
+		{"creative", "creative-survival", false},
+	}
+	for _, c := range cases {
+		if got := serverMatches(c.onlyServer, c.name); got != c.want {
+			t.Errorf("serverMatches(%q, %q) = %v, want %v", c.onlyServer, c.name, got, c.want)
+		}
+	}
+}

@@ -312,6 +312,18 @@ func serverNames(servers []struct {
 	return names
 }
 
+// serverMatches reports whether a discovered server should be processed in a
+// backup cycle targeted at onlyServer. An empty onlyServer selects every
+// server; otherwise the comparison is case-insensitive because server names
+// are normalized to lowercase at config load and discovery uses lowercase
+// directory names.
+func serverMatches(onlyServer, name string) bool {
+	if onlyServer == "" {
+		return true
+	}
+	return strings.EqualFold(onlyServer, name)
+}
+
 func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 	d.cycleMu.Lock()
 	defer d.cycleMu.Unlock()
@@ -356,7 +368,7 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 			continue
 		}
 
-		if onlyServer != "" && s.Name != onlyServer {
+		if !serverMatches(onlyServer, s.Name) {
 			continue
 		}
 
