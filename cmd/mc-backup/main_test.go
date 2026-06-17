@@ -73,7 +73,7 @@ func TestPrintUsageIncludesUpdate(t *testing.T) {
 
 	printUsage()
 
-	if !strings.Contains(stderr.String(), "update     Pull latest source, install, and restart service") {
+	if !strings.Contains(stderr.String(), "update     Download and install the latest binary from GitHub") {
 		t.Fatalf("usage output does not include update command:\n%s", stderr.String())
 	}
 }

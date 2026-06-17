@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"mc-backup/internal/engine"
 )
@@ -27,7 +28,8 @@ var repoURL = "" // set via -ldflags
 var osExecutable = os.Executable
 
 var downloadFile = func(url, dest string) error {
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("download %s: %w", url, err)
 	}
@@ -39,11 +41,21 @@ var downloadFile = func(url, dest string) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", dest, err)
 	}
-	defer f.Close()
+	if err := f.Chmod(0755); err != nil {
+		f.Close()
+		os.Remove(dest)
+		return fmt.Errorf("chmod %s: %w", dest, err)
+	}
 	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(dest)
 		return fmt.Errorf("write %s: %w", dest, err)
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(dest)
+		return fmt.Errorf("close %s: %w", dest, err)
+	}
+	return nil
 }
 
 func deriveReleaseURL(repoURL string) string {
@@ -196,7 +208,7 @@ Commands:
   scan       Trigger immediate server discovery
   cancel     Abort the current backup cycle
   config     Read or write config values
-  update     Pull latest source, install, and restart service
+  update     Download and install the latest binary from GitHub
   version    Print version
 
 run flags:
