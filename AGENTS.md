@@ -26,7 +26,7 @@
 ## Test Seams
 
 - `internal/engine/command.go`: global `commandRunner` variable (interface) — use `withCommandRunner()` to swap in tests
-- `cmd/mc-backup/main.go`: `usageOutput` (`io.Writer`), `findRepoRoot`, and `runUpdateStep` are package-level function variables that can be replaced in tests
+- `cmd/mc-backup/main.go`: `usageOutput` (`io.Writer`), `downloadFile`, and `runUpdateStep` are package-level function variables that can be replaced in tests
 
 ## Key Behaviors
 
