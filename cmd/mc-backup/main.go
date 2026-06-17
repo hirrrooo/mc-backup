@@ -60,7 +60,8 @@ var downloadFile = func(url, dest string) error {
 }
 
 var verifyChecksum = func(binaryPath, checksumURL string) error {
-	resp, err := http.Get(checksumURL)
+	client := &http.Client{Timeout: 1 * time.Minute}
+	resp, err := client.Get(checksumURL)
 	if err != nil {
 		return fmt.Errorf("fetch checksum %s: %w", checksumURL, err)
 	}
