@@ -295,3 +295,67 @@ func TestReadLastSnapshotsSkipsMalformedLines(t *testing.T) {
 		t.Errorf("survival local path = %q", got["survival"].Local)
 	}
 }
+
+func TestSaveAutoServersAtomicRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	servers := map[string]ServerConfig{
+		"creative": {
+			Enabled:          true,
+			ContainerName:    "creative-mc-1",
+			RconPassword:     "secret",
+			PauseIfNoPlayers: true,
+		},
+	}
+	if err := SaveAutoServers(cfgPath, servers); err != nil {
+		t.Fatalf("SaveAutoServers: %v", err)
+	}
+
+	// No leftover temp files in the config directory.
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("leftover temp file: %s", e.Name())
+		}
+	}
+
+	// The auto file round-trips through LoadConfig with values intact.
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	got, ok := cfg.Servers["creative"]
+	if !ok {
+		t.Fatal("creative server missing after reload")
+	}
+	if got.ContainerName != "creative-mc-1" || got.RconPassword != "secret" || !got.PauseIfNoPlayers {
+		t.Errorf("creative server not persisted correctly: %#v", got)
+	}
+}
+
+func TestSaveAutoServersEmptyRemovesFile(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\n"), 0644); err != nil {
+		t.Fatalf("write auto: %v", err)
+	}
+
+	if err := SaveAutoServers(cfgPath, map[string]ServerConfig{}); err != nil {
+		t.Fatalf("SaveAutoServers: %v", err)
+	}
+
+	if _, err := os.Stat(autoPath); !os.IsNotExist(err) {
+		t.Fatalf("auto file should be removed, got err=%v", err)
+	}
+}

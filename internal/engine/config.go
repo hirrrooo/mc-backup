@@ -209,11 +209,14 @@ func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 		os.Remove(autoPath)
 		return nil
 	}
-	f, err := os.Create(autoPath)
+	dir := filepath.Dir(autoPath)
+	f, err := os.CreateTemp(dir, filepath.Base(autoPath)+".*.tmp")
 	if err != nil {
-		return fmt.Errorf("create %s: %w", autoPath, err)
+		return fmt.Errorf("create temp for %s: %w", autoPath, err)
 	}
-	defer f.Close()
+	tmp := f.Name()
+	defer os.Remove(tmp)
+
 	for name, s := range servers {
 		fmt.Fprintf(f, "\n[server.%s]\n", name)
 		fmt.Fprintf(f, "enabled = %v\n", s.Enabled)
@@ -223,6 +226,16 @@ func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 		fmt.Fprintf(f, "# defaults to <watch.path>/<server>/mc-data if empty\n")
 		fmt.Fprintf(f, "data_dir = %q\n", s.DataDir)
 		fmt.Fprintf(f, "pause_if_no_players = %v\n", s.PauseIfNoPlayers)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, autoPath); err != nil {
+		return fmt.Errorf("replace %s: %w", autoPath, err)
 	}
 	return nil
 }
