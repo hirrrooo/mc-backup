@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"io"
@@ -54,6 +55,41 @@ var downloadFile = func(url, dest string) error {
 	if err := f.Close(); err != nil {
 		os.Remove(dest)
 		return fmt.Errorf("close %s: %w", dest, err)
+	}
+	return nil
+}
+
+var verifyChecksum = func(binaryPath, checksumURL string) error {
+	resp, err := http.Get(checksumURL)
+	if err != nil {
+		return fmt.Errorf("fetch checksum %s: %w", checksumURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetch checksum %s: HTTP %d", checksumURL, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return fmt.Errorf("read checksum: %w", err)
+	}
+	fields := strings.Fields(strings.TrimSpace(string(body)))
+	if len(fields) == 0 {
+		return fmt.Errorf("checksum %s is empty", checksumURL)
+	}
+	expected := fields[0]
+
+	f, err := os.Open(binaryPath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", binaryPath, err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("hash %s: %w", binaryPath, err)
+	}
+	got := fmt.Sprintf("%x", h.Sum(nil))
+	if !strings.EqualFold(got, expected) {
+		return fmt.Errorf("checksum mismatch: want %s, got %s", expected, got)
 	}
 	return nil
 }
@@ -247,6 +283,11 @@ func runUpdate() error {
 	fmt.Printf("Downloading %s\n", releaseURL)
 	if err := downloadFile(releaseURL, tmpBin); err != nil {
 		return fmt.Errorf("download: %w", err)
+	}
+
+	if err := verifyChecksum(tmpBin, releaseURL+".sha256"); err != nil {
+		os.Remove(tmpBin)
+		return fmt.Errorf("checksum: %w", err)
 	}
 
 	steps := []struct {

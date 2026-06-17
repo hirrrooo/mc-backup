@@ -28,7 +28,12 @@ jobs:
             -o mc-backup-linux-amd64 \
             ./cmd/mc-backup
 
+      - name: Generate checksum
+        run: sha256sum mc-backup-linux-amd64 > mc-backup-linux-amd64.sha256
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          files: mc-backup-linux-amd64
+          files: |
+            mc-backup-linux-amd64
+            mc-backup-linux-amd64.sha256
