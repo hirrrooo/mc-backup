@@ -2,34 +2,30 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
 )
 
-func TestUpdateCmdCachesRepoAndRunsSteps(t *testing.T) {
+func TestUpdateCmdDownloadsAndInstalls(t *testing.T) {
 	var calls []string
 	oldRepoURL := repoURL
-	oldEnsureRepo := ensureRepo
+	oldDownloadFile := downloadFile
 	oldRunUpdateStep := runUpdateStep
-	oldOsUserHomeDir := osUserHomeDir
 	oldOsExecutable := osExecutable
 	t.Cleanup(func() {
 		repoURL = oldRepoURL
-		ensureRepo = oldEnsureRepo
+		downloadFile = oldDownloadFile
 		runUpdateStep = oldRunUpdateStep
-		osUserHomeDir = oldOsUserHomeDir
 		osExecutable = oldOsExecutable
 	})
 
 	repoURL = "https://github.com/hirrrooo/mc-backup.git"
-	osUserHomeDir = func() (string, error) { return "/home/test", nil }
 	osExecutable = func() (string, error) { return "/usr/local/bin/mc-backup", nil }
 
-	ensureRepo = func(cacheDir, url string) (string, error) {
-		calls = append(calls, "ensureRepo:"+cacheDir)
-		return "/home/test/.cache/mc-backup/source", nil
+	downloadFile = func(url, dest string) error {
+		calls = append(calls, "download:"+url+" "+dest)
+		return nil
 	}
 	runUpdateStep = func(dir, name string, command string, args ...string) error {
 		calls = append(calls, name+":"+command+" "+strings.Join(args, " "))
@@ -41,8 +37,7 @@ func TestUpdateCmdCachesRepoAndRunsSteps(t *testing.T) {
 	}
 
 	want := []string{
-		"ensureRepo:/home/test/.cache/mc-backup/source",
-		"Building mc-backup:go build -ldflags -X main.repoURL=https://github.com/hirrrooo/mc-backup.git -o /usr/local/bin/mc-backup.new ./cmd/mc-backup",
+		"download:https://github.com/hirrrooo/mc-backup/releases/latest/download/mc-backup-linux-amd64 /usr/local/bin/mc-backup.new",
 		"Stopping mc-backup service:sudo systemctl stop mc-backup",
 		"Installing mc-backup:sudo mv /usr/local/bin/mc-backup.new /usr/local/bin/mc-backup",
 		"Starting mc-backup service:sudo systemctl start mc-backup",
@@ -55,14 +50,11 @@ func TestUpdateCmdCachesRepoAndRunsSteps(t *testing.T) {
 
 func TestUpdateCmdFallbackNoRepoURL(t *testing.T) {
 	oldRepoURL := repoURL
-	oldOsUserHomeDir := osUserHomeDir
 	t.Cleanup(func() {
 		repoURL = oldRepoURL
-		osUserHomeDir = oldOsUserHomeDir
 	})
 
 	repoURL = ""
-	osUserHomeDir = func() (string, error) { return "/home/test", nil }
 
 	err := runUpdate()
 	if err == nil {
@@ -70,26 +62,6 @@ func TestUpdateCmdFallbackNoRepoURL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "embedded repo URL") {
 		t.Fatalf("expected embedded repo URL error, got: %v", err)
-	}
-}
-
-func TestUpdateCmdEnsureRepoHomeDirError(t *testing.T) {
-	oldRepoURL := repoURL
-	oldOsUserHomeDir := osUserHomeDir
-	t.Cleanup(func() {
-		repoURL = oldRepoURL
-		osUserHomeDir = oldOsUserHomeDir
-	})
-
-	repoURL = "https://github.com/hirrrooo/mc-backup.git"
-	osUserHomeDir = func() (string, error) { return "", errors.New("no home") }
-
-	err := runUpdate()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "home") {
-		t.Fatalf("expected home dir error, got: %v", err)
 	}
 }
 

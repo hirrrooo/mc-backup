@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -25,38 +24,31 @@ var usageOutput io.Writer = os.Stderr
 
 var repoURL = "" // set via -ldflags
 
-var osUserHomeDir = os.UserHomeDir
-
 var osExecutable = os.Executable
 
-var ensureRepo = func(cacheDir, url string) (string, error) {
-	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
-		fmt.Printf("Cloning %s into %s\n", url, cacheDir)
-		cmd := exec.Command("git", "clone", url, cacheDir)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("clone: %w", err)
-		}
-	} else {
-		fmt.Printf("Updating cached repo at %s\n", cacheDir)
-		cmd := exec.Command("git", "-C", cacheDir, "pull", "--ff-only")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("pull: %w", err)
-		}
+var downloadFile = func(url, dest string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("download %s: %w", url, err)
 	}
-	return cacheDir, nil
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dest, err)
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return fmt.Errorf("write %s: %w", dest, err)
+	}
+	return f.Close()
 }
 
-var findRepoRoot = func() (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("not inside a git repository")
-	}
-	return strings.TrimSpace(string(out)), nil
+func deriveReleaseURL(repoURL string) string {
+	base := strings.TrimSuffix(repoURL, ".git")
+	return base + "/releases/latest/download/mc-backup-linux-amd64"
 }
 
 var runUpdateStep = func(dir, name string, command string, args ...string) error {
@@ -229,18 +221,8 @@ func updateCmd() {
 }
 
 func runUpdate() error {
-	home, err := osUserHomeDir()
-	if err != nil {
-		return fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	cacheDir := filepath.Join(home, ".cache", "mc-backup", "source")
-
 	if repoURL == "" {
-		return errors.New("update requires a built binary with embedded repo URL; use ./update.sh from the source repo instead")
-	}
-	repoRoot, err := ensureRepo(cacheDir, repoURL)
-	if err != nil {
-		return err
+		return fmt.Errorf("update requires a built binary with embedded repo URL; use ./update.sh from the source repo instead")
 	}
 
 	execPath, err := osExecutable()
@@ -249,12 +231,17 @@ func runUpdate() error {
 	}
 	tmpBin := execPath + ".new"
 
+	releaseURL := deriveReleaseURL(repoURL)
+	fmt.Printf("Downloading %s\n", releaseURL)
+	if err := downloadFile(releaseURL, tmpBin); err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+
 	steps := []struct {
 		name    string
 		command string
 		args    []string
 	}{
-		{"Building mc-backup", "go", []string{"build", "-ldflags", fmt.Sprintf("-X main.repoURL=%s", repoURL), "-o", tmpBin, "./cmd/mc-backup"}},
 		{"Stopping mc-backup service", "sudo", []string{"systemctl", "stop", "mc-backup"}},
 		{"Installing mc-backup", "sudo", []string{"mv", tmpBin, execPath}},
 		{"Starting mc-backup service", "sudo", []string{"systemctl", "start", "mc-backup"}},
@@ -262,7 +249,7 @@ func runUpdate() error {
 	}
 
 	for _, step := range steps {
-		if err := runUpdateStep(repoRoot, step.name, step.command, step.args...); err != nil {
+		if err := runUpdateStep("", step.name, step.command, step.args...); err != nil {
 			return fmt.Errorf("%s: %w", step.name, err)
 		}
 	}
