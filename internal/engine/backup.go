@@ -190,11 +190,11 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 		if err := runRcon(ctx, container, server.RconPassword, "save-all flush", rconRetries, rconRetryInterval); err != nil {
 			return "", false, fmt.Errorf("save-all flush: %w", err)
 		}
-
-		commandRunner.CommandContext(context.Background(), "sync").Run()
 	} else {
-		slog.Info("offline backup, skipping RCON and sync", "server", serverName)
+		slog.Info("offline backup, skipping RCON", "server", serverName)
 	}
+
+	commandRunner.CommandContext(context.Background(), "sync").Run()
 
 	ts := time.Now().Format("20060102-1504")
 

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -179,22 +178,19 @@ func backupCmd() {
 		}
 	}
 
-	backendURL := fmt.Sprintf("http://%s/backup", cfg.Global.ListenAddr)
-	if server != "" {
-		backendURL += "?server=" + url.QueryEscape(server)
-	}
-	if *offline {
-		if server != "" {
-			backendURL += "&offline=true"
-		} else {
-			backendURL += "?offline=true"
-		}
-	}
-	req, err := http.NewRequest(http.MethodPost, backendURL, nil)
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s/backup", cfg.Global.ListenAddr), nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backup: %v\n", err)
 		os.Exit(1)
 	}
+	q := req.URL.Query()
+	if server != "" {
+		q.Set("server", server)
+	}
+	if *offline {
+		q.Set("offline", "true")
+	}
+	req.URL.RawQuery = q.Encode()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backup failed: %v\n", err)

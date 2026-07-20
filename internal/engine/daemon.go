@@ -376,7 +376,13 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string, offli
 		if container == "" {
 			container = s.Name + "-mc-1"
 		}
-		if !offline {
+		if offline {
+			if containerRunning(container) {
+				slog.Warn("offline backup requested but container is running, data may be inconsistent",
+					"server", s.Name, "container", container)
+			}
+			slog.Info("offline backup, skipping container checks", "server", s.Name)
+		} else {
 			if !containerRunning(container) {
 				slog.Info("container not running, skipping backup", "server", s.Name, "container", container)
 				continue
@@ -393,8 +399,6 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string, offli
 					continue
 				}
 			}
-		} else {
-			slog.Info("offline backup, skipping container checks", "server", s.Name)
 		}
 
 		be := NewBackupEngine(*cfg)
