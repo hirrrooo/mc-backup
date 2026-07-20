@@ -54,7 +54,7 @@ func (jt *JobTracker) Snapshot() map[string]*JobInfo {
 type StatusCallbacks struct {
 	OnCancel func()
 	OnScan   func()
-	OnBackup func(server string)
+	OnBackup func(server string, offline bool)
 }
 
 func startStatusServer(addr string, jt *JobTracker, callbacks StatusCallbacks) {
@@ -90,7 +90,9 @@ func startStatusServer(addr string, jt *JobTracker, callbacks StatusCallbacks) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		callbacks.OnBackup(r.URL.Query().Get("server"))
+		server := r.URL.Query().Get("server")
+		offline := r.URL.Query().Get("offline") == "true"
+		callbacks.OnBackup(server, offline)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("backup triggered"))
 	})
