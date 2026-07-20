@@ -155,7 +155,7 @@ func NewBackupEngine(cfg Config) *BackupEngine {
 	return &BackupEngine{cfg: cfg}
 }
 
-func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, serverName string, server ServerConfig, prevLocalBackup, prevNASBackup string) (destPath string, usedSSH bool, rerr error) {
+func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, serverName string, server ServerConfig, prevLocalBackup, prevNASBackup string, offline bool) (destPath string, usedSSH bool, rerr error) {
 	dataDir := server.DataDir
 	if dataDir == "" {
 		dataDir = filepath.Join(watch.Path, serverName, "mc-data")
@@ -167,30 +167,34 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 		container = serverName + "-mc-1"
 	}
 
-	if err := runRcon(ctx, container, server.RconPassword, "save-off", rconRetries, rconRetryInterval); err != nil {
-		return "", false, fmt.Errorf("save-off: %w", err)
-	}
-
-	defer func() {
-		slog.Info("re-enabling autosave", "server", serverName)
-		detachedCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		defer cancel()
-		if err := runRcon(detachedCtx, container, server.RconPassword, "save-on", rconRetries, rconRetryInterval); err != nil {
-			saveOnErr := fmt.Errorf("FATAL: save-on failed for %s: %w", serverName, err)
-			slog.Error(saveOnErr.Error())
-			if rerr == nil {
-				rerr = saveOnErr
-			} else {
-				slog.Error("save-on failed after backup error, server may have autosave OFF", "server", serverName, "backup_error", rerr)
-			}
+	if !offline {
+		if err := runRcon(ctx, container, server.RconPassword, "save-off", rconRetries, rconRetryInterval); err != nil {
+			return "", false, fmt.Errorf("save-off: %w", err)
 		}
-	}()
 
-	if err := runRcon(ctx, container, server.RconPassword, "save-all flush", rconRetries, rconRetryInterval); err != nil {
-		return "", false, fmt.Errorf("save-all flush: %w", err)
+		defer func() {
+			slog.Info("re-enabling autosave", "server", serverName)
+			detachedCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+			if err := runRcon(detachedCtx, container, server.RconPassword, "save-on", rconRetries, rconRetryInterval); err != nil {
+				saveOnErr := fmt.Errorf("FATAL: save-on failed for %s: %w", serverName, err)
+				slog.Error(saveOnErr.Error())
+				if rerr == nil {
+					rerr = saveOnErr
+				} else {
+					slog.Error("save-on failed after backup error, server may have autosave OFF", "server", serverName, "backup_error", rerr)
+				}
+			}
+		}()
+
+		if err := runRcon(ctx, container, server.RconPassword, "save-all flush", rconRetries, rconRetryInterval); err != nil {
+			return "", false, fmt.Errorf("save-all flush: %w", err)
+		}
+
+		commandRunner.CommandContext(context.Background(), "sync").Run()
+	} else {
+		slog.Info("offline backup, skipping RCON and sync", "server", serverName)
 	}
-
-	commandRunner.CommandContext(context.Background(), "sync").Run()
 
 	ts := time.Now().Format("20060102-1504")
 
