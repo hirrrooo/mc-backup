@@ -207,8 +207,8 @@ func (d *Daemon) Run() error {
 		OnScan: func() {
 			go d.runDiscovery(ctx)
 		},
-		OnBackup: func(server string) {
-			go d.runBackupCycle(ctx, server)
+		OnBackup: func(server string, offline bool) {
+			go d.runBackupCycle(ctx, server, offline)
 		},
 	})
 
@@ -249,9 +249,9 @@ func (d *Daemon) Run() error {
 	} else if len(due) > 0 {
 		slog.Info("running initial backup for servers past interval",
 			"due", due, "recent", recent)
-		d.runBackupCycle(ctx, "")
+		d.runBackupCycle(ctx, "", false)
 	} else {
-		d.runBackupCycle(ctx, "")
+		d.runBackupCycle(ctx, "", false)
 	}
 
 	backupTicker := time.NewTicker(cfg.Global.BackupInterval.Duration)
@@ -266,7 +266,7 @@ func (d *Daemon) Run() error {
 			slog.Info("daemon shutting down")
 			return ctx.Err()
 		case <-backupTicker.C:
-			d.runBackupCycle(ctx, "")
+			d.runBackupCycle(ctx, "", false)
 			newCfg := d.ac.Load()
 			newInterval := newCfg.Global.BackupInterval.Duration
 			if newInterval != cfg.Global.BackupInterval.Duration {
@@ -324,7 +324,7 @@ func serverMatches(onlyServer, name string) bool {
 	return strings.EqualFold(onlyServer, name)
 }
 
-func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
+func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string, offline bool) {
 	d.cycleMu.Lock()
 	defer d.cycleMu.Unlock()
 
@@ -376,21 +376,25 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 		if container == "" {
 			container = s.Name + "-mc-1"
 		}
-		if !containerRunning(container) {
-			slog.Info("container not running, skipping backup", "server", s.Name, "container", container)
-			continue
-		}
+		if !offline {
+			if !containerRunning(container) {
+				slog.Info("container not running, skipping backup", "server", s.Name, "container", container)
+				continue
+			}
 
-		if s.Server.PauseIfNoPlayers {
-			out, err := rconOutput(ctx, container, s.Server.RconPassword, "list")
-			if err != nil {
-				slog.Warn("cannot query player count, skipping backup", "server", s.Name, "error", err)
-				continue
+			if s.Server.PauseIfNoPlayers {
+				out, err := rconOutput(ctx, container, s.Server.RconPassword, "list")
+				if err != nil {
+					slog.Warn("cannot query player count, skipping backup", "server", s.Name, "error", err)
+					continue
+				}
+				if countPlayers(out) == 0 {
+					slog.Info("no players online, skipping backup", "server", s.Name)
+					continue
+				}
 			}
-			if countPlayers(out) == 0 {
-				slog.Info("no players online, skipping backup", "server", s.Name)
-				continue
-			}
+		} else {
+			slog.Info("offline backup, skipping container checks", "server", s.Name)
 		}
 
 		be := NewBackupEngine(*cfg)
@@ -421,7 +425,7 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string) {
 			})
 		}
 
-		destPath, usedSSH, err := be.BackupServer(ctx, s.Watch, s.Name, s.Server, prev.local, prev.nas)
+		destPath, usedSSH, err := be.BackupServer(ctx, s.Watch, s.Name, s.Server, prev.local, prev.nas, offline)
 		if err != nil {
 			slog.Error("backup failed", "server", s.Name, "error", err)
 			d.jobTracker.Remove(key)
@@ -465,6 +469,6 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 	cfg = d.provisionServers(cfg, newServers)
 	if len(newServers) > 0 {
 		slog.Info("new servers discovered, triggering immediate backup cycle")
-		go d.runBackupCycle(ctx, "")
+		go d.runBackupCycle(ctx, "", false)
 	}
 }
