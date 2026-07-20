@@ -158,6 +158,7 @@ func main() {
 func backupCmd() {
 	fs := flag.NewFlagSet("backup", flag.ExitOnError)
 	cfgPath := fs.String("config", findConfig(), "config file path")
+	offline := fs.Bool("offline", false, "backup without RCON (works when container is offline)")
 	fs.Parse(os.Args[2:])
 
 	cfg, err := engine.LoadConfig(*cfgPath)
@@ -168,9 +169,24 @@ func backupCmd() {
 
 	server := fs.Arg(0)
 
-	backendURL := fmt.Sprintf("http://%s/backup", cfg.Global.ListenAddr)
-	if server != "" {
-		backendURL += "?server=" + url.QueryEscape(server)
+	if server == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backup: cannot get current directory: %v\n", err)
+			os.Exit(1)
+		}
+		candidate := filepath.Base(cwd)
+		if _, ok := cfg.Servers[strings.ToLower(candidate)]; ok {
+			server = candidate
+		} else {
+			fmt.Fprintf(os.Stderr, "backup: no server specified and %q is not a known server\n", candidate)
+			os.Exit(1)
+		}
+	}
+
+	backendURL := fmt.Sprintf("http://%s/backup?server=%s", cfg.Global.ListenAddr, url.QueryEscape(server))
+	if *offline {
+		backendURL += "&offline=true"
 	}
 	req, err := http.NewRequest(http.MethodPost, backendURL, nil)
 	if err != nil {
