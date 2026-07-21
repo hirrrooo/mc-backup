@@ -1,51 +1,65 @@
 # mc-backup
 
-Minecraft server backup daemon — RCON-controlled backup cycles with rsync snapshots to local storage and/or a remote NAS over SSH. Auto-discovers servers from watched directories, auto-provisions config, and runs as a systemd service.
+Minecraft server backup daemon — RCON-controlled rsync snapshots stored on the
+local host or on a remote NAS. It auto-discovers servers under watched
+directories, auto-provisions config, and runs as a systemd service.
 
 ## Quick Start
 
 ```bash
-# Build and install
 sudo make install
-
-# Edit config
 nano ~/.config/mc-backup/config.toml
-
-# Start the service
 systemctl start mc-backup
-
-# Check status
 mc-backup status
 ```
 
 ## Prerequisites
 
 - **Go 1.21+** to build from source
-- **Docker** (running on the same host — must be up before the service starts)
-- **rsync** and **ssh** on the gameserver host
-- **SSH key auth** from the gameserver to the NAS (passwordless)
-- A **Minecraft server** managed by Docker (tested with `itzg/minecraft-server`)
+- **Docker** running on the same host
+- **rsync**
+- **ssh** and passwordless SSH key authentication when using a NAS target
+- A Minecraft server managed by Docker (tested with `itzg/minecraft-server`)
 
 ## How It Works
 
-Every backup cycle:
+Each backup cycle disables autosave, flushes the world, syncs filesystem
+buffers, copies a timestamped snapshot with rsync, and re-enables autosave even
+when the cycle fails. Old snapshots are pruned according to the retention
+settings.
 
-1. `docker exec rcon-cli save-off` — disables autosave
-2. `docker exec rcon-cli save-all flush` — flushes world data to disk
-3. `sync` — flushes OS filesystem buffers
-4. **rsync** copies the world directory to a timestamped snapshot (either local SSD or direct to NAS via SSH)
-5. `docker exec rcon-cli save-on` — re-enables autosave (guaranteed even on crash)
-6. **Prune** — removes old snapshots beyond the configured limits
-7. If SSD usage exceeds the threshold, the **archive engine** migrates old local snapshots to NAS (rate-limited)
+Each server explicitly selects a backup target with `target = "local"` or
+`target = "nas"`. An omitted target defaults to NAS; this preserves the
+previous behavior for existing configurations. Target validation happens
+before any RCON or SSH command is run.
 
-Each snapshot is a full directory using rsync's `--link-dest` — unchanged files are hard-linked to the previous snapshot, so storage is incremental while each snapshot is a browseable, restorable directory.
+### Local target
+
+Set `target = "local"` to store snapshots at:
 
 ```
-/opt/minecraft/servers/docker/servers/survival/backups/
-  20250611-1200/   ← full directory (hard links to 1100 for unchanged files)
-  20250611-1100/   ← full directory
-  20250611-1000/   ← full directory (will be archived to NAS if SSD > 90%)
+<local.dest_root>/<namespace>/<server>/<timestamp>/
 ```
+
+Local rsync requires neither SSH, NAS connectivity, nor the `.nas-ready`
+sentinel. The local root is configured globally in `[local]`.
+
+### NAS target
+
+Set `target = "nas"` (or omit `target`) to store snapshots at:
+
+```
+<nas.dest_root>/<namespace>/<server>/<timestamp>/
+```
+
+NAS snapshots still require SSH access and the `.nas-ready` sentinel directly
+under `nas.dest_root`. Without that sentinel, NAS work is skipped. NAS writes
+are rate-limited by `global.max_mbps`.
+
+Retention applies independently to snapshots on each target: `prune_days`
+removes snapshots older than the configured number of days and `prune_count`
+keeps only the configured number of newest snapshots. A value of zero disables
+that limit.
 
 ## Installation
 
@@ -57,7 +71,9 @@ cd mc-backup
 sudo make install
 ```
 
-This builds the binary, installs it to `/usr/local/bin/mc-backup`, places the systemd unit at `/etc/systemd/system/mc-backup.service`, copies the example config to `~/.config/mc-backup/config.toml` (primary) and `/etc/mc-backup/config.toml` (fallback — neither overwrites an existing file), and enables the service.
+This builds the binary, installs it to `/usr/local/bin/mc-backup`, installs the
+systemd unit, copies the example config to the user config (or system fallback)
+without overwriting an existing file, and enables the service.
 
 ### Manual Install
 
@@ -73,236 +89,198 @@ sudo systemctl enable mc-backup
 
 ## Configuration
 
-Config lives at `~/.config/mc-backup/config.toml` (with `/etc/mc-backup/config.toml` as fallback). Auto-provisioned server entries are written to `config-auto.toml` alongside your config — your hand-edited file is never touched. Environment variables override with the prefix `MC_BACKUP_`, e.g. `MC_BACKUP_NAS_SSH_HOST=nas2.local`.
+Config is read from `~/.config/mc-backup/config.toml`, falling back to
+`/etc/mc-backup/config.toml`. Auto-provisioned servers are written to the
+sidecar `<config path>-auto.toml`; hand-edited config is not modified.
+Environment variables use the `MC_BACKUP_` prefix.
 
 ### Required Settings
 
-At minimum, you must configure:
-
 ```toml
 [global]
-backup_interval = "1h"          # how often to run a backup cycle (e.g. "30m", "6h")
+backup_interval = "1h"
+
+[local]
+dest_root = "/var/lib/mc-backup"
 
 [nas]
-ssh_user = "myuser"             # SSH user for NAS access
-ssh_host = "192.168.1.50"       # NAS hostname or IP
-ssh_key = "~/.ssh/id_ed25519"   # path to private SSH key
-dest_root = "/volume1/backups"  # NAS directory for backups
+ssh_user = "myuser"
+ssh_host = "192.168.1.50"
+ssh_key = "~/.ssh/id_ed25519"
+dest_root = "/volume1/backups"
 
 [[watch]]
-path = "/opt/minecraft/servers/docker/servers"   # directory containing per-server subdirs
-namespace = "minecraft"                          # used for NAS subfolder naming
+path = "/opt/minecraft/servers/docker/servers"
+namespace = "minecraft"
 ```
 
 ### Full Reference
 
 ```toml
 [global]
-listen_addr = "127.0.0.1:47990"   # HTTP API for mc-backup status
-backup_interval = "1h"            # interval between backup cycles
-initial_delay = "2m"              # minimum container uptime before first backup
-max_mbps = 40.0                   # rate limit for ALL rsync to NAS (env: MC_BACKUP_GLOBAL_MAX_MBPS)
+listen_addr = "127.0.0.1:47990"
+backup_interval = "1h"
+initial_delay = "2m"
+max_mbps = 40.0             # rate limit for NAS rsync
+
+[local]
+dest_root = "/var/lib/mc-backup"
 
 [nas]
-ssh_user = "backup"               # SSH username for NAS
-ssh_host = "nas.local"            # NAS hostname or IP
-ssh_port = 22                     # SSH port (default 22)
-ssh_key = "~/.ssh/id_ed25519"     # SSH private key path
-dest_root = "/volume1/backups"    # root directory on NAS for all backups
+ssh_user = "backup"
+ssh_host = "nas.local"
+ssh_port = 22
+ssh_key = "~/.ssh/id_ed25519"
+dest_root = "/volume1/backups"
 
 [retention]
-prune_days = 7                    # delete NAS backups older than N days (0 = disabled)
-prune_count = 0                   # keep only N most recent NAS backups (0 = disabled)
+prune_days = 7
+prune_count = 0
 
 [[watch]]
-path = "/opt/minecraft/servers/docker/servers"   # watched directory
-namespace = "minecraft"                          # namespace for NAS path: <dest_root>/<namespace>/<server>/
-local_keep = 3                  # number of recent snapshots to keep on SSD
-max_disk_pct = 90               # archive to NAS when SSD usage exceeds this %
+path = "/opt/minecraft/servers/docker/servers"
+namespace = "minecraft"
 ```
 
-### Per-Server Overrides
-
-The daemon auto-discovers server directories under each `[[watch]].path`. It detects the Docker container name via `docker compose ps`, falling back to `<dirname>-mc-1`. Auto-provisioned servers are **disabled by default** — you must explicitly enable them and set the RCON password:
+The daemon auto-discovers server directories under each watch path. Servers
+are disabled by default; enable one and set its RCON password:
 
 ```bash
 mc-backup config set server.survival.enabled true
 mc-backup config set server.survival.rcon_password hunter2
+mc-backup config set server.survival.target local
 ```
 
-This writes to your `config.toml`. You can also manually create entries:
+Manual server configuration:
 
 ```toml
 [server.survival]
 enabled = true
-ssh_only = true                 # skip local SSD, rsync directly to NAS
-container_name = "survival-mc-1"  # override auto-detected container name
-rcon_password = "hunter2"       # RCON password (required for backup to work)
-pause_if_no_players = true      # skip backup when server is empty
+target = "nas"                         # or "local"
+container_name = "survival-mc-1"
+rcon_password = "hunter2"
+pause_if_no_players = true
 ```
 
-Set `enabled = false` to stop backing up a server without deleting its config.
-
-Set `ssh_only = true` for servers with large worlds — backups go straight to NAS, never touch local SSD.
-
-Set `pause_if_no_players = true` to skip backups when nobody is online. The daemon runs `rcon-cli list` before each cycle and skips the server if the player count is zero.
+`target = "local"` uses the local layout and does not contact the NAS.
+`target = "nas"` uses the NAS layout and its SSH/sentinel requirements.
 
 ## CLI Usage
 
 ```bash
-mc-backup run                    # start the daemon (used by systemd)
-mc-backup status                 # live dashboard of active jobs
-mc-backup backup [server]        # trigger an immediate backup cycle
-mc-backup scan                   # trigger immediate server discovery
-mc-backup cancel                 # abort the current backup cycle
-mc-backup config get <key>       # read a config value
-mc-backup config set <key> <val> # write a config value (live reload)
-mc-backup version                # print version
+mc-backup run
+mc-backup status
+mc-backup backup [server]
+mc-backup scan
+mc-backup cancel
+mc-backup config get <key>
+mc-backup config set <key> <value>
+mc-backup version
 ```
 
-Config keys use dot-separated paths:
+Config keys use dot-separated paths, for example:
+
 ```bash
-mc-backup config get nas.ssh_host
-mc-backup config set server.survival.ssh_only true
+mc-backup config get server.survival.target
+mc-backup config set server.survival.target local
 mc-backup config set global.backup_interval 2h
 ```
 
-The daemon watches the config file via inotify — changes take effect within seconds without restart (except `listen_addr`, which requires a service restart).
+Changes take effect within seconds through inotify, except `listen_addr`,
+which requires a service restart.
 
 ## NAS Setup
 
-### SSH Key Auth
+Generate and install a key when using NAS targets:
 
 ```bash
-# On the gameserver, generate a key if you don't have one
 ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_backup
-
-# Copy it to the NAS
 ssh-copy-id -i ~/.ssh/id_ed25519_backup backup@nas.local
 ```
 
-### NAS Sentinel File
-
-The archive engine checks for a sentinel file before writing to the NAS. Create it once:
+Create the sentinel once, directly in the configured NAS root:
 
 ```bash
 ssh backup@nas.local "touch /volume1/backups/.nas-ready"
 ```
 
-Without this file, archive migrations and all `ssh_only` backups are skipped (NAS treated as unavailable).
+The sentinel is required for NAS writes and NAS retention operations. Local
+targets do not need it.
 
-## Storage Architecture
+## Legacy Backup Directory
 
-```
-Gameserver (SSD)                                  NAS (HDD)
-───────────────                                   ──────────
-servers/docker/servers/survival/backups/          /volume1/backups/minecraft/survival/
-  20250611-1200/  ← --link-dest→                   20250611-1000/
-  20250611-1100/  ← --link-dest→                   20250611-0900/
-  20250611-1000/  ← (archived to NAS)      
-                                                      .nas-ready
-```
-
-- Recent snapshots stay on fast SSD for quick restores
-- When SSD hits `max_disk_pct`, the archive engine migrates oldest snapshots to NAS
-- `ssh_only` servers never use local SSD — data goes directly to NAS
-- All NAS transfers are rate-limited by `max_mbps` to avoid I/O contention with the game server
+Older versions may have snapshots under
+`<watch.path>/<server>/backups`. That directory is not part of the current
+target layouts and is not automatically migrated. Review its contents, use
+the restoration commands below if needed, then manually migrate wanted
+snapshots to the selected target or delete the old directory.
 
 ## Service Management
 
 ```bash
-systemctl start mc-backup     # start the daemon
-systemctl stop mc-backup      # graceful stop (waits for current cycle)
-systemctl restart mc-backup   # restart
-systemctl status mc-backup    # check if running
-journalctl -u mc-backup -f    # follow logs
+systemctl start mc-backup
+systemctl stop mc-backup
+systemctl restart mc-backup
+systemctl status mc-backup
+journalctl -u mc-backup -f
 ```
 
-The service sends `SIGTERM` on stop, which triggers the deferred `save-on` before exiting. Timeout is 60 seconds — if the current backup still hasn't finished, systemd force-kills.
+Stopping gracefully allows the current cycle to finish and re-enables autosave.
 
 ## Restoring a Backup
 
-Each snapshot is a complete directory. To restore:
+Snapshots are complete directories. Restore a local snapshot with:
 
 ```bash
-# From local SSD
-rsync -a /opt/minecraft/servers/docker/servers/survival/backups/20250611-1100/ \
+rsync -a /var/lib/mc-backup/minecraft/survival/20250611-1100/ \
   /opt/minecraft/servers/docker/servers/survival/
+```
 
-# From NAS
+Restore a NAS snapshot with:
+
+```bash
 rsync -a -e ssh backup@nas.local:/volume1/backups/minecraft/survival/20250611-1000/ \
   /opt/minecraft/servers/docker/servers/survival/
 ```
 
-Then restart the Minecraft container.
+Restart the Minecraft container after restoring.
 
 ## Environment Variable Overrides
 
-Any config value can be set via environment variables. Use the prefix `MC_BACKUP_` with the config path in uppercase, dots replaced with underscores:
+Any config value can be set with `MC_BACKUP_` and uppercase, underscore-
+separated keys:
 
 ```bash
+MC_BACKUP_LOCAL_DEST_ROOT=/srv/mc-backups
 MC_BACKUP_NAS_SSH_HOST=nas2.local
-MC_BACKUP_GLOBAL_MAX_MBPS=20.0
-MC_BACKUP_SERVER_SURVIVAL_RCON_PASSWORD=secret
-MC_BACKUP_SERVER_SURVIVAL_SSH_ONLY=true
+MC_BACKUP_SERVER_SURVIVAL_TARGET=local
 ```
 
-Server names are case-insensitive for env var lookup.
-
-## Uninstall
-
-```bash
-sudo make uninstall
-```
+Server names are case-insensitive.
 
 ## FAQ
 
-**How do I add a new server?**  
-Drop its directory under a watch path (e.g. `/opt/minecraft/servers/docker/servers/new-server/`). The daemon auto-discovers it within 1 minute and writes an entry to `config-auto.toml`. The server is **disabled by default** — enable it and set the RCON password:
+**How do I add a server?**  Drop its directory under a watch path. It will be
+discovered and written to the auto config sidecar; enable it and set its RCON
+password.
 
-```bash
-mc-backup config set server.new-server.enabled true
-mc-backup config set server.new-server.rcon_password hunter2
-```
+**What happens if the NAS is unavailable?**  NAS backups and NAS retention
+operations require the sentinel and are skipped or fail before rsync as
+appropriate. Local backups continue independently.
 
-**How do I stop backing up a server?**  
-`mc-backup config set server.old-server.enabled false`
+**Does rsync re-upload unchanged files?**  No. Snapshots use `--link-dest`
+where a previous snapshot exists, so unchanged files are hard-linked on the
+destination.
 
-**How do I force a large server to skip local SSD entirely?**  
-`mc-backup config set server.big-world.ssh_only true` — backups go straight to NAS over SSH, no local storage used.
+**Can I skip backups when nobody is online?**  Yes. Set
+`pause_if_no_players = true`; the daemon checks the player count through RCON.
 
-**How do I pause all backup operations?**  
-`systemctl stop mc-backup` — sends SIGTERM, allows current cycle to finish and fires deferred `save-on`. Restart with `systemctl start mc-backup`.
+**Why is the first backup slow?**  The first snapshot has no previous
+snapshot for `--link-dest`, so it copies the complete world.
 
-**Does rsync re-upload unchanged files?**  
-No. `--link-dest` compares against the previous snapshot. Unchanged files are hard-linked on the destination (zero network transfer, zero extra disk). Only changed blocks are sent over the wire (rsync delta transfer).
+**Does backup stop the server?**  No. It temporarily disables autosave,
+flushes the world, copies it, and re-enables autosave while the server remains
+running.
 
-**How do I restore from a backup?**  
-Each snapshot is a full directory. From local: `rsync -a /opt/minecraft/servers/docker/servers/survival/backups/20250611-1200/ /opt/minecraft/servers/docker/servers/survival/`. From NAS: add `-e ssh backup@nas:...`.
-
-**What happens if the daemon crashes mid-backup?**  
-The `save-on` command is deferred — it runs even if the function panics or returns early. If the process is SIGKILL'd (not SIGTERM), the deferred function won't run and the server may be left with autosave off. Restart the daemon; the first thing it does on the next cycle is `save-on` as a readiness check.
-
-**What if the NAS is unavailable?**  
-For direct-to-NAS backups (from `ssh_only` or disk threshold routing): the `checkNASReady` sentinel check fails before rsync starts, and the cycle aborts with an error. For archive migrations: the NAS sentinel check in the archive engine skips the migration. Local backups continue normally.
-
-**How do I change the backup interval at runtime?**  
-`mc-backup config set global.backup_interval 30m` — takes effect on the next tick cycle without restart. Changes to `listen_addr` require a restart.
-
-**What does `namespace` do?**  
-It organizes NAS backups into subdirectories: `<dest_root>/<namespace>/<server>/<timestamp>/`. Useful if you have multiple watch paths or host groups (e.g. `minecraft`, `minecraft-testing`).
-
-**Can I have multiple watch paths?**  
-Yes. Add multiple `[[watch]]` blocks with different paths and namespaces. Each is scanned independently for server directories.
-
-**Why is my first backup taking so long?**  
-The first backup has no `--link-dest` target, so it's a full copy of the entire world. Subsequent backups are near-instant for unchanged worlds and proportional to changed data for active worlds.
-
-**Does the backup stop the server?**
-No. `save-off` disables automatic world saves (chunks saved periodically), but the server continues running and accepting players. `save-all flush` triggers a manual save and flush to disk before rsync runs. `save-on` re-enables autosave. The entire process typically takes seconds plus rsync time.
-
-**Can I skip backups when nobody's online?**
-Yes. Set `pause_if_no_players = true` in the server config. The daemon runs `rcon-cli list` before each backup and skips the cycle if zero players are online. Requires `rcon_password` to be set.
-
-**What does `initial_delay` actually do?**
-On startup, the daemon checks each discovered container's uptime via `docker inspect`. It waits until all containers have been running for at least `initial_delay` before the first backup — giving the Minecraft server time to finish booting its RCON listener. If all containers are already past the threshold, the daemon starts immediately with zero wait.
+**What does `namespace` do?**  It separates snapshots from different watch
+paths or host groups under each target's `dest_root`.

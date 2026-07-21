@@ -3,11 +3,11 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
-
-	"log/slog"
+	"time"
 )
 
 func pruneLocalByCount(localPath string, keep int) {
@@ -31,6 +31,40 @@ func pruneLocalByCount(localPath string, keep int) {
 	sort.Sort(sort.Reverse(sort.StringSlice(dirs)))
 	for _, d := range dirs[keep:] {
 		path := filepath.Join(localPath, d)
+		slog.Info("pruning local backup", "path", path)
+		if err := os.RemoveAll(path); err != nil {
+			slog.Warn("prune: failed to remove", "path", path, "error", err)
+		}
+	}
+}
+
+func pruneLocalByDays(localPath string, days int, now time.Time) {
+	if days <= 0 {
+		return
+	}
+	entries, err := os.ReadDir(localPath)
+	if err != nil {
+		slog.Warn("prune: cannot read local dir", "path", localPath, "error", err)
+		return
+	}
+	cutoff := now.Add(-time.Duration(days) * 24 * time.Hour)
+	for _, entry := range entries {
+		if !entry.IsDir() || !isBackupDir(entry.Name()) {
+			continue
+		}
+		snapshotTime, err := time.ParseInLocation("20060102-1504", entry.Name(), now.Location())
+		if err != nil {
+			slog.Warn("prune: cannot parse local backup name", "path", filepath.Join(localPath, entry.Name()), "error", err)
+			continue
+		}
+		path := filepath.Join(localPath, entry.Name())
+		if _, err := entry.Info(); err != nil {
+			slog.Warn("prune: cannot stat local backup", "path", path, "error", err)
+			continue
+		}
+		if !snapshotTime.Before(cutoff) {
+			continue
+		}
 		slog.Info("pruning local backup", "path", path)
 		if err := os.RemoveAll(path); err != nil {
 			slog.Warn("prune: failed to remove", "path", path, "error", err)

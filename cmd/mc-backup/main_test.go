@@ -78,7 +78,7 @@ func TestUpdateCmdFallbackNoRepoURL(t *testing.T) {
 	}
 }
 
-func TestPrintUsageIncludesUpdate(t *testing.T) {
+func TestPrintUsageDocumentsConfigKeysAndUpdate(t *testing.T) {
 	var stderr bytes.Buffer
 	oldStderr := usageOutput
 	t.Cleanup(func() { usageOutput = oldStderr })
@@ -88,6 +88,14 @@ func TestPrintUsageIncludesUpdate(t *testing.T) {
 
 	if !strings.Contains(stderr.String(), "update     Download and install the latest binary from GitHub") {
 		t.Fatalf("usage output does not include update command:\n%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "archive") {
+		t.Fatalf("usage output contains stale archive terminology:\n%s", stderr.String())
+	}
+	for _, key := range []string{"target", "local.dest_root"} {
+		if !strings.Contains(stderr.String(), key) {
+			t.Fatalf("usage output does not document %q:\n%s", key, stderr.String())
+		}
 	}
 }
 

@@ -4,6 +4,9 @@ backup_interval = "1h"
 initial_delay = "2m"
 max_mbps = 40.0
 
+[local]
+dest_root = "/var/lib/mc-backup"
+
 [nas]
 ssh_user = "backup"
 ssh_host = "nas.local"
@@ -18,11 +21,9 @@ prune_count = 0
 [[watch]]
 path = "/opt/minecraft/servers/docker/servers"
 namespace = "minecraft"
-local_keep = 3
-max_disk_pct = 90
 
 # Per-server overrides are auto-generated on first discovery.
 # Uncomment and edit to customize:
 # [server.example]
+# target = "nas"                 # or "local"
 # pause_if_no_players = true   # skip backups when no one is online
-# ssh_only = true              # skip local SSD, go directly to NAS

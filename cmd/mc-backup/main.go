@@ -254,7 +254,7 @@ Usage: mc-backup <command> [flags]
 
 Commands:
   run        Start the daemon (backup loop + status API)
-  status     Show live backup/archive job dashboard
+  status     Show live backup job dashboard
   backup     Trigger an immediate backup cycle [server]
   scan       Trigger immediate server discovery
   cancel     Abort the current backup cycle
@@ -269,6 +269,10 @@ run flags:
 config actions:
   get <key>   Read a config value (e.g. "global.backup_interval")
   set <key> <value>   Write a config value (e.g. "server.creative.pause_if_no_players true")
+
+Config keys:
+  target      Per-server backup target: "local" or "nas"
+  local.dest_root      Root directory for local snapshots
 
 Config files: /etc/mc-backup/config.toml, ~/.config/mc-backup/config.toml
 Environment overrides: MC_BACKUP_<SECTION>_<KEY> (e.g. MC_BACKUP_GLOBAL_MAX_MBPS=20)

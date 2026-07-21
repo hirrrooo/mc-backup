@@ -41,16 +41,18 @@ type NASConfig struct {
 	DestRoot string `toml:"dest_root"`
 }
 
+type LocalConfig struct {
+	DestRoot string `toml:"dest_root"`
+}
+
 type RetentionConfig struct {
 	PruneDays  int `toml:"prune_days"`
 	PruneCount int `toml:"prune_count"`
 }
 
 type WatchConfig struct {
-	Path       string `toml:"path"`
-	Namespace  string `toml:"namespace"`
-	LocalKeep  int    `toml:"local_keep"`
-	MaxDiskPct int    `toml:"max_disk_pct"`
+	Path      string `toml:"path"`
+	Namespace string `toml:"namespace"`
 }
 
 func (w WatchConfig) backupDir(serverName string) string {
@@ -59,7 +61,7 @@ func (w WatchConfig) backupDir(serverName string) string {
 
 type ServerConfig struct {
 	Enabled          bool   `toml:"enabled"`
-	SSHOnly          bool   `toml:"ssh_only"`
+	Target           string `toml:"target"`
 	ContainerName    string `toml:"container_name"`
 	RconPassword     string `toml:"rcon_password"`
 	DataDir          string `toml:"data_dir"`
@@ -68,6 +70,7 @@ type ServerConfig struct {
 
 type Config struct {
 	Global    GlobalConfig            `toml:"global"`
+	Local     LocalConfig             `toml:"local"`
 	NAS       NASConfig               `toml:"nas"`
 	Retention RetentionConfig         `toml:"retention"`
 	Watch     []WatchConfig           `toml:"watch"`
@@ -115,9 +118,32 @@ func loadConfigFile(path string) (*Config, error) {
 	}
 	cfg.Servers = normalized
 
-	cfg.NAS.DestRoot = strings.TrimRight(cfg.NAS.DestRoot, "/")
+	cfg.Local.DestRoot = normalizeDestRoot(cfg.Local.DestRoot)
+	cfg.NAS.DestRoot = normalizeDestRoot(cfg.NAS.DestRoot)
 
 	return cfg, nil
+}
+
+func normalizeDestRoot(root string) string {
+	trimmed := strings.TrimRight(root, "/")
+	if trimmed == "" && root != "" {
+		return "/"
+	}
+	return trimmed
+}
+
+func resolveBackupTarget(serverName string, server ServerConfig, local LocalConfig) (string, error) {
+	target := server.Target
+	if target == "" {
+		target = "nas"
+	}
+	if target != "local" && target != "nas" {
+		return "", fmt.Errorf("server %q has invalid backup target %q (want %q or %q)", serverName, target, "local", "nas")
+	}
+	if target == "local" && local.DestRoot == "" {
+		return "", fmt.Errorf("server %q target %q requires local.dest_root", serverName, target)
+	}
+	return target, nil
 }
 
 func SaveConfig(path string, cfg *Config) error {
@@ -176,6 +202,7 @@ func saveSplit(path string, cfg *Config) error {
 func cloneConfig(src *Config) *Config {
 	dst := &Config{
 		Global:    src.Global,
+		Local:     src.Local,
 		NAS:       src.NAS,
 		Retention: src.Retention,
 		Watch:     src.Watch,
@@ -220,7 +247,7 @@ func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 	for name, s := range servers {
 		fmt.Fprintf(f, "\n[server.%s]\n", name)
 		fmt.Fprintf(f, "enabled = %v\n", s.Enabled)
-		fmt.Fprintf(f, "ssh_only = %v\n", s.SSHOnly)
+		fmt.Fprintf(f, "target = %q\n", s.Target)
 		fmt.Fprintf(f, "container_name = %q\n", s.ContainerName)
 		fmt.Fprintf(f, "rcon_password = %q\n", s.RconPassword)
 		fmt.Fprintf(f, "# defaults to <watch.path>/<server>/mc-data if empty\n")
@@ -271,9 +298,17 @@ func applyEnvOverrides(cfg *Config) {
 			setGlobalField(&cfg.Global, key, val)
 		case "nas":
 			setNASField(&cfg.NAS, key, val)
+		case "local":
+			setLocalField(&cfg.Local, key, val)
 		case "retention":
 			setRetentionField(&cfg.Retention, key, val)
 		}
+	}
+}
+
+func setLocalField(v *LocalConfig, key, val string) {
+	if key == "dest_root" {
+		v.DestRoot = normalizeDestRoot(val)
 	}
 }
 
@@ -332,8 +367,8 @@ func setServerField(s *ServerConfig, key, val string) {
 	switch key {
 	case "enabled":
 		s.Enabled = strings.ToLower(val) == "true"
-	case "ssh_only":
-		s.SSHOnly = strings.ToLower(val) == "true"
+	case "target":
+		s.Target = val
 	case "container_name":
 		s.ContainerName = val
 	case "rcon_password":
@@ -347,7 +382,7 @@ func setServerField(s *ServerConfig, key, val string) {
 
 var serverFieldKeys = []string{
 	"enabled",
-	"ssh_only",
+	"target",
 	"container_name",
 	"rcon_password",
 	"data_dir",
@@ -448,6 +483,8 @@ func GetConfigValue(cfg *Config, key string) string {
 		return getGlobalField(cfg.Global, parts[1])
 	case "nas":
 		return getNASField(cfg.NAS, parts[1])
+	case "local":
+		return getLocalField(cfg.Local, parts[1])
 	case "retention":
 		return getRetentionField(cfg.Retention, parts[1])
 	case "server":
@@ -480,6 +517,8 @@ func SetConfigValue(path, key, val string) error {
 		setGlobalField(&cfg.Global, parts[1], val)
 	case "nas":
 		setNASField(&cfg.NAS, parts[1], val)
+	case "local":
+		setLocalField(&cfg.Local, parts[1], val)
 	case "retention":
 		setRetentionField(&cfg.Retention, parts[1], val)
 	case "server":
@@ -495,6 +534,13 @@ func SetConfigValue(path, key, val string) error {
 		return fmt.Errorf("unknown section: %s", section)
 	}
 	return saveSplit(path, cfg)
+}
+
+func getLocalField(l LocalConfig, key string) string {
+	if key == "dest_root" {
+		return l.DestRoot
+	}
+	return ""
 }
 
 func getGlobalField(g GlobalConfig, key string) string {
@@ -541,8 +587,8 @@ func getServerFieldStr(s ServerConfig, key string) string {
 	switch key {
 	case "enabled":
 		return fmt.Sprintf("%t", s.Enabled)
-	case "ssh_only":
-		return fmt.Sprintf("%t", s.SSHOnly)
+	case "target":
+		return s.Target
 	case "container_name":
 		return s.ContainerName
 	case "rcon_password":

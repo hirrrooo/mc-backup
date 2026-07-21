@@ -95,6 +95,8 @@ func runRsync(ctx context.Context, args []string, onProgress func(bytesMoved, to
 	return cmd.Run()
 }
 
+var rsyncRunner = runRsync
+
 func checkNASReady(ctx context.Context, nas NASConfig) error {
 	sentinel := fmt.Sprintf("%s/.nas-ready", nas.DestRoot)
 	args := sshBaseArgs(nas)
@@ -156,6 +158,11 @@ func NewBackupEngine(cfg Config) *BackupEngine {
 }
 
 func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, serverName string, server ServerConfig, prevLocalBackup, prevNASBackup string, offline bool) (destPath string, usedSSH bool, rerr error) {
+	target, err := resolveBackupTarget(serverName, server, be.cfg.Local)
+	if err != nil {
+		return "", false, err
+	}
+
 	dataDir := server.DataDir
 	if dataDir == "" {
 		dataDir = filepath.Join(watch.Path, serverName, "mc-data")
@@ -198,24 +205,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 
 	ts := time.Now().Format("20060102-1504")
 
-	useSSH := server.SSHOnly
-	if !useSSH {
-		backupDir := watch.backupDir(serverName)
-		if pct, err := diskUsagePct(backupDir); err == nil {
-			estSize, _ := dirSize(dataDir, excludes)
-			totalSpace := totalDiskSpace(backupDir)
-			if totalSpace > 0 {
-				neededPct := (float64(estSize) / float64(totalSpace)) * 100.0
-				if freePct := 100.0 - pct; freePct-neededPct < float64(100-watch.MaxDiskPct) {
-					slog.Info("SSD usage projected above threshold, routing to NAS",
-						"server", serverName, "current_pct", pct, "estimated_pct", pct+neededPct)
-					useSSH = true
-				}
-			}
-		}
-	}
-
-	if useSSH {
+	if target == "nas" {
 		if err := checkNASReady(ctx, be.cfg.NAS); err != nil {
 			return "", false, fmt.Errorf("NAS not ready: %w", err)
 		}
@@ -225,24 +215,23 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 			return "", false, fmt.Errorf("create NAS dir: %w", err)
 		}
 		args := nasRsyncArgs(dataDir, prevNASBackup, destDir, be.cfg.NAS, be.cfg.Global.MaxMBps, excludes)
-		if err := runRsync(ctx, args, be.OnProgress); err != nil {
+		if err := rsyncRunner(ctx, args, be.OnProgress); err != nil {
 			return "", false, fmt.Errorf("NAS rsync: %w", err)
 		}
 		destPath = destDir
 	} else {
-		backupDir := watch.backupDir(serverName)
-		destPath = filepath.Join(backupDir, ts)
+		destPath = filepath.Join(be.cfg.Local.DestRoot, watch.Namespace, serverName, ts)
 		if err := os.MkdirAll(destPath, 0755); err != nil {
-			return "", false, fmt.Errorf("mkdir: %w", err)
+			return "", false, fmt.Errorf("local mkdir: %w", err)
 		}
 		args := localRsyncArgs(dataDir, prevLocalBackup, destPath, excludes)
-		if err := runRsync(ctx, args, be.OnProgress); err != nil {
+		if err := rsyncRunner(ctx, args, be.OnProgress); err != nil {
 			return "", false, fmt.Errorf("local rsync: %w", err)
 		}
 	}
 
-	slog.Info("backup complete", "server", serverName, "dest", destPath, "ssh_only", useSSH)
-	return destPath, useSSH, nil
+	slog.Info("backup complete", "server", serverName, "target", target, "dest", destPath)
+	return destPath, target == "nas", nil
 }
 
 func parseRsyncProgress(line string) (bytesMoved int64, totalSize int64, ok bool) {

@@ -46,6 +46,17 @@ func fallbackContainerName(serverName string) string {
 	return serverName + "-mc-1"
 }
 
+func warnLegacyBackupDir(w WatchConfig, serverName string) {
+	entries, err := os.ReadDir(w.backupDir(serverName))
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	slog.Warn("discovery: legacy backup directory is no longer managed",
+		"path", w.backupDir(serverName),
+		"server", serverName,
+		"message", "migrate snapshots to the desired target or delete them manually")
+}
+
 func detectContainerName(serverDir, serverName string) string {
 	for _, fname := range composeFileCandidates() {
 		composePath := filepath.Join(serverDir, fname)
@@ -115,6 +126,17 @@ func discoverServers(watches []WatchConfig, knownServers map[string]ServerConfig
 	Name   string
 	Server ServerConfig
 }) {
+	return discoverServersWithWarning(watches, knownServers, nil)
+}
+
+func discoverServersWithWarning(watches []WatchConfig, knownServers map[string]ServerConfig, warn func(WatchConfig, string)) ([]struct {
+	Watch  WatchConfig
+	Name   string
+	Server ServerConfig
+}, []struct {
+	Name   string
+	Server ServerConfig
+}) {
 	var results []struct {
 		Watch  WatchConfig
 		Name   string
@@ -138,6 +160,9 @@ func discoverServers(watches []WatchConfig, knownServers map[string]ServerConfig
 			if !isValidServerName(name) {
 				slog.Warn("discovery: skipping invalid server name", "name", name, "path", w.Path)
 				continue
+			}
+			if warn != nil {
+				warn(w, name)
 			}
 			server, exists := knownServers[name]
 			if exists && !server.Enabled {

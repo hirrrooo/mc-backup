@@ -20,31 +20,55 @@ type lastBackup struct {
 }
 
 type Daemon struct {
-	cfgPath     string
-	ac          atomicConfig
-	jobTracker  *JobTracker
-	lastBackups map[string]*lastBackup
-	autoServers map[string]bool
-	autoMu      sync.Mutex
-	cycleMu     sync.Mutex
-	cancelMu    sync.Mutex
-	cancelFn    context.CancelFunc
-	Debug       bool
+	cfgPath      string
+	ac           atomicConfig
+	jobTracker   *JobTracker
+	lastBackups  map[string]*lastBackup
+	autoServers  map[string]bool
+	autoMu       sync.Mutex
+	legacyMu     sync.Mutex
+	legacyWarned map[string]struct{}
+	cycleMu      sync.Mutex
+	cancelMu     sync.Mutex
+	cancelFn     context.CancelFunc
+	Debug        bool
 }
 
 func NewDaemon(cfgPath string, cfg *Config) *Daemon {
 	d := &Daemon{
-		cfgPath:     cfgPath,
-		jobTracker:  NewJobTracker(),
-		lastBackups: make(map[string]*lastBackup),
-		autoServers: loadAutoServerNames(cfgPath),
+		cfgPath:      cfgPath,
+		jobTracker:   NewJobTracker(),
+		lastBackups:  make(map[string]*lastBackup),
+		autoServers:  loadAutoServerNames(cfgPath),
+		legacyWarned: make(map[string]struct{}),
 	}
 	d.ac.Store(cfg)
 	return d
 }
 
+func (d *Daemon) warnLegacyBackupDirOnce(w WatchConfig, serverName string) {
+	path := w.backupDir(serverName)
+	entries, err := os.ReadDir(path)
+	if err != nil || len(entries) == 0 {
+		return
+	}
+
+	d.legacyMu.Lock()
+	if d.legacyWarned == nil {
+		d.legacyWarned = make(map[string]struct{})
+	}
+	if _, warned := d.legacyWarned[path]; warned {
+		d.legacyMu.Unlock()
+		return
+	}
+	d.legacyWarned[path] = struct{}{}
+	d.legacyMu.Unlock()
+
+	warnLegacyBackupDir(w, serverName)
+}
+
 func (d *Daemon) waitForContainers(ctx context.Context, cfg *Config) {
-	servers, _ := discoverServers(cfg.Watch, cfg.Servers)
+	servers, _ := discoverServersWithWarning(cfg.Watch, cfg.Servers, d.warnLegacyBackupDirOnce)
 	if len(servers) == 0 {
 		slog.Info("no servers found, skipping container uptime check")
 		return
@@ -108,41 +132,51 @@ func (d *Daemon) Cancel() {
 
 func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 	stored := readLastSnapshots(d.cfgPath)
-	servers, _ := discoverServers(cfg.Watch, cfg.Servers)
+	servers, _ := discoverServersWithWarning(cfg.Watch, cfg.Servers, d.warnLegacyBackupDirOnce)
 
 	for _, s := range servers {
+		target, err := resolveBackupTarget(s.Name, s.Server, cfg.Local)
+		if err != nil {
+			slog.Error("snapshot discovery: invalid backup target", "server", s.Name, "error", err)
+			continue
+		}
 		if _, ok := stored[s.Name]; ok {
 			continue
 		}
 
 		var latestLocal, latestNAS string
 
-		backupDir := s.Watch.backupDir(s.Name)
-		if entries, err := os.ReadDir(backupDir); err == nil {
-			for _, e := range entries {
-				if e.IsDir() && isBackupDir(e.Name()) && e.Name() > latestLocal {
-					latestLocal = e.Name()
+		if target == "local" {
+			localDir := filepath.Join(cfg.Local.DestRoot, s.Watch.Namespace, s.Name)
+			if entries, readErr := os.ReadDir(localDir); readErr == nil {
+				latest := ""
+				for _, e := range entries {
+					if e.IsDir() && isBackupDir(e.Name()) && e.Name() > latest {
+						latest = e.Name()
+					}
 				}
-			}
-			if latestLocal != "" {
-				latestLocal = filepath.Join(backupDir, latestLocal)
+				if latest != "" {
+					latestLocal = filepath.Join(localDir, latest)
+				}
 			}
 		}
 
-		nasDir := fmt.Sprintf("%s/%s/%s", cfg.NAS.DestRoot, s.Watch.Namespace, s.Name)
-		nasArgs := sshBaseArgs(cfg.NAS)
-		nasArgs = append(nasArgs,
-			fmt.Sprintf("%s@%s", cfg.NAS.SSHUser, cfg.NAS.SSHHost),
-			latestNASSnapshotCommand(nasDir),
-		)
-		cmd := commandRunner.CommandContext(ctx, nasArgs[0], nasArgs[1:]...)
-		if out, err := cmd.Output(); err == nil {
-			nasSnap := strings.TrimSpace(string(out))
-			if nasSnap != "" {
-				latestNAS = nasDir + "/" + filepath.Base(nasSnap)
+		if target == "nas" {
+			nasDir := fmt.Sprintf("%s/%s/%s", cfg.NAS.DestRoot, s.Watch.Namespace, s.Name)
+			nasArgs := sshBaseArgs(cfg.NAS)
+			nasArgs = append(nasArgs,
+				fmt.Sprintf("%s@%s", cfg.NAS.SSHUser, cfg.NAS.SSHHost),
+				latestNASSnapshotCommand(nasDir),
+			)
+			cmd := commandRunner.CommandContext(ctx, nasArgs[0], nasArgs[1:]...)
+			if out, err := cmd.Output(); err == nil {
+				nasSnap := strings.TrimSpace(string(out))
+				if nasSnap != "" {
+					latestNAS = nasDir + "/" + filepath.Base(nasSnap)
+				}
+			} else {
+				slog.Debug("cannot list NAS snapshots for discovery", "server", s.Name, "error", err)
 			}
-		} else {
-			slog.Debug("cannot list NAS snapshots for discovery", "server", s.Name, "error", err)
 		}
 
 		if latestLocal != "" || latestNAS != "" {
@@ -340,7 +374,7 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string, offli
 	}()
 
 	cfg := d.ac.Load()
-	servers, newServers := discoverServers(cfg.Watch, cfg.Servers)
+	servers, newServers := discoverServersWithWarning(cfg.Watch, cfg.Servers, d.warnLegacyBackupDirOnce)
 
 	if onlyServer == "" {
 		slog.Info("backup cycle starting",
@@ -442,25 +476,22 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string, offli
 			prev.local = destPath
 		}
 		d.lastBackups[key] = prev
+		if usedSSH {
+			if err := pruneNASByDays(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, cfg.Retention.PruneDays); err != nil {
+				slog.Warn("NAS day pruning failed", "server", s.Name, "error", err)
+			}
+			if err := pruneNASByCount(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, cfg.Retention.PruneCount); err != nil {
+				slog.Warn("NAS count pruning failed", "server", s.Name, "error", err)
+			}
+		} else {
+			localPath := filepath.Join(cfg.Local.DestRoot, s.Watch.Namespace, s.Name)
+			pruneLocalByDays(localPath, cfg.Retention.PruneDays, time.Now())
+			pruneLocalByCount(localPath, cfg.Retention.PruneCount)
+		}
 		d.jobTracker.Remove(key)
 
 		writeLastSnapshot(d.cfgPath, s.Name, prev.local, prev.nas)
 
-		pruneLocalByCount(
-			s.Watch.backupDir(s.Name),
-			s.Watch.LocalKeep,
-		)
-
-		ae := NewArchiveEngine(*cfg)
-		ae.ArchiveIfNeeded(ctx, s.Watch, s.Name)
-
-		pruneRet := cfg.Retention
-		if err := pruneNASByDays(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneDays); err != nil {
-			slog.Error("NAS prune by days failed", "server", s.Name, "error", err)
-		}
-		if err := pruneNASByCount(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, pruneRet.PruneCount); err != nil {
-			slog.Error("NAS prune by count failed", "server", s.Name, "error", err)
-		}
 	}
 
 	slog.Info("backup cycle complete", "duration", time.Since(startTime).Round(time.Second))
@@ -468,7 +499,7 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string, offli
 
 func (d *Daemon) runDiscovery(ctx context.Context) {
 	cfg := d.ac.Load()
-	_, newServers := discoverServers(cfg.Watch, cfg.Servers)
+	_, newServers := discoverServersWithWarning(cfg.Watch, cfg.Servers, d.warnLegacyBackupDirOnce)
 
 	cfg = d.provisionServers(cfg, newServers)
 	if len(newServers) > 0 {

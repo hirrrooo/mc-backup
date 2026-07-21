@@ -19,6 +19,9 @@ backup_interval = "1h"
 initial_delay = "2m"
 max_mbps = 40.0
 
+[local]
+dest_root = "relative/local///"
+
 [nas]
 ssh_user = "backup"
 ssh_host = "nas.local"
@@ -33,18 +36,15 @@ prune_count = 0
 [[watch]]
 path = "/opt/mc/docker/servers"
 namespace = "minecraft"
-local_keep = 3
-max_disk_pct = 90
 
 [server.creative]
 enabled = true
-ssh_only = false
+target = "local"
 container_name = "creative-mc-1"
 rcon_password = "hunter2"
 
 [server.skyblock]
 enabled = true
-ssh_only = true
 `)
 	os.WriteFile(cfgPath, content, 0644)
 
@@ -62,6 +62,9 @@ ssh_only = true
 	if cfg.NAS.SSHUser != "backup" {
 		t.Errorf("ssh_user: got %q", cfg.NAS.SSHUser)
 	}
+	if cfg.Local.DestRoot != "relative/local" {
+		t.Errorf("local.dest_root: got %q", cfg.Local.DestRoot)
+	}
 	if len(cfg.Watch) != 1 {
 		t.Fatalf("watch: expected 1, got %d", len(cfg.Watch))
 	}
@@ -74,8 +77,36 @@ ssh_only = true
 	if cfg.Servers["creative"].RconPassword != "hunter2" {
 		t.Errorf("server.creative.rcon_password: got %q", cfg.Servers["creative"].RconPassword)
 	}
-	if !cfg.Servers["skyblock"].SSHOnly {
-		t.Error("server.skyblock.ssh_only: expected true")
+	if cfg.Servers["creative"].Target != "local" {
+		t.Errorf("server.creative.target: got %q", cfg.Servers["creative"].Target)
+	}
+	if cfg.Servers["skyblock"].Target != "" {
+		t.Errorf("server.skyblock.target: got %q, want omitted", cfg.Servers["skyblock"].Target)
+	}
+}
+
+func TestTargetConfig(t *testing.T) {
+	if got, err := resolveBackupTarget("skyblock", ServerConfig{}, LocalConfig{}); err != nil || got != "nas" {
+		t.Fatalf("omitted target = %q, %v; want nas", got, err)
+	}
+	if got, err := resolveBackupTarget("creative", ServerConfig{Target: "local"}, LocalConfig{DestRoot: "relative/local"}); err != nil || got != "local" {
+		t.Fatalf("local target = %q, %v; want local", got, err)
+	}
+}
+
+func TestResolveBackupTargetRejectsInvalidTarget(t *testing.T) {
+	_, err := resolveBackupTarget("creative", ServerConfig{Target: "s3"}, LocalConfig{})
+	want := `server "creative" has invalid backup target "s3" (want "local" or "nas")`
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}
+
+func TestResolveBackupTargetRequiresLocalRoot(t *testing.T) {
+	_, err := resolveBackupTarget("creative", ServerConfig{Target: "local"}, LocalConfig{})
+	want := `server "creative" target "local" requires local.dest_root`
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
 	}
 }
 
@@ -99,6 +130,8 @@ rcon_password = "filepass"
 	t.Setenv("MC_BACKUP_NAS_SSH_HOST", "override.local")
 	t.Setenv("MC_BACKUP_NAS_SSH_PORT", "2222")
 	t.Setenv("MC_BACKUP_SERVER_CREATIVE_RCON_PASSWORD", "envpass")
+	t.Setenv("MC_BACKUP_LOCAL_DEST_ROOT", "/env///")
+	t.Setenv("MC_BACKUP_SERVER_CREATIVE_TARGET", "local")
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -113,6 +146,12 @@ rcon_password = "filepass"
 	}
 	if cfg.Servers["creative"].RconPassword != "envpass" {
 		t.Errorf("RconPassword: got %q, want envpass", cfg.Servers["creative"].RconPassword)
+	}
+	if cfg.Local.DestRoot != "/env" {
+		t.Errorf("Local.DestRoot: got %q, want /env", cfg.Local.DestRoot)
+	}
+	if got := GetConfigValue(cfg, "server.creative.target"); got != "local" {
+		t.Errorf("target getter: got %q, want local", got)
 	}
 }
 
@@ -306,6 +345,7 @@ func TestSaveAutoServersAtomicRoundTrip(t *testing.T) {
 	servers := map[string]ServerConfig{
 		"creative": {
 			Enabled:          true,
+			Target:           "nas",
 			ContainerName:    "creative-mc-1",
 			RconPassword:     "secret",
 			PauseIfNoPlayers: true,
@@ -313,6 +353,13 @@ func TestSaveAutoServersAtomicRoundTrip(t *testing.T) {
 	}
 	if err := SaveAutoServers(cfgPath, servers); err != nil {
 		t.Fatalf("SaveAutoServers: %v", err)
+	}
+	autoBytes, err := os.ReadFile(autoServersPath(cfgPath))
+	if err != nil {
+		t.Fatalf("read auto file: %v", err)
+	}
+	if !strings.Contains(string(autoBytes), "target = \"nas\"") || strings.Contains(string(autoBytes), "ssh_only") {
+		t.Errorf("auto server target serialization = %s", autoBytes)
 	}
 
 	// No leftover temp files in the config directory.

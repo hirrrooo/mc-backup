@@ -2,9 +2,34 @@ package engine
 
 import (
 	"bytes"
+	"context"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+type recordingCommand struct {
+	name string
+	args []string
+}
+
+func (c recordingCommand) Run() error                      { return nil }
+func (c recordingCommand) Output() ([]byte, error)         { return nil, nil }
+func (c recordingCommand) CombinedOutput() ([]byte, error) { return nil, nil }
+func (c recordingCommand) SetStdout(_ io.Writer)           {}
+func (c recordingCommand) SetStderr(_ io.Writer)           {}
+
+type recordingRunner struct {
+	commands []recordingCommand
+}
+
+func (r *recordingRunner) CommandContext(_ context.Context, name string, args ...string) command {
+	c := recordingCommand{name: name, args: args}
+	r.commands = append(r.commands, c)
+	return c
+}
 
 func TestLocalRsyncArgs(t *testing.T) {
 	args := localRsyncArgs("/opt/mc/data", "/backups/mc/creative", "/backups/mc/20250611-1200", []string{"*.jar", "cache"})
@@ -32,11 +57,82 @@ func TestLocalRsyncArgs(t *testing.T) {
 	if !hasLinkDest {
 		t.Error("missing --link-dest flag")
 	}
+	for _, a := range args {
+		if strings.HasPrefix(a, "--bwlimit=") || a == "-e" || strings.Contains(a, "ssh") {
+			t.Errorf("local rsync unexpectedly contains NAS option %q", a)
+		}
+	}
 	if !hasTimeout {
 		t.Error("missing --timeout flag")
 	}
 	if !hasSrc || !hasDest {
 		t.Error("missing source or destination")
+	}
+}
+
+func TestBackupServerRejectsInvalidTargetBeforeCommands(t *testing.T) {
+	runner := &recordingRunner{}
+	var gotErr error
+	withCommandRunner(runner, func() {
+		_, _, gotErr = NewBackupEngine(Config{}).BackupServer(
+			context.Background(), WatchConfig{Path: "/watch", Namespace: "ns"}, "creative",
+			ServerConfig{Target: "invalid"}, "", "", true,
+		)
+	})
+	if gotErr == nil || !strings.Contains(gotErr.Error(), `server "creative"`) {
+		t.Fatalf("BackupServer error = %v, want server name", gotErr)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("invalid target ran %d commands, want zero: %#v", len(runner.commands), runner.commands)
+	}
+}
+
+func TestBackupServerLocalTargetUsesLocalHierarchy(t *testing.T) {
+	localRoot := t.TempDir()
+	source := t.TempDir()
+	runner := &recordingRunner{}
+	var rsyncArgs []string
+	previousRsyncRunner := rsyncRunner
+	rsyncRunner = func(_ context.Context, args []string, _ func(int64, int64)) error {
+		rsyncArgs = append([]string(nil), args...)
+		return nil
+	}
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	path, usedSSH, err := func() (string, bool, error) {
+		var resultPath string
+		var resultSSH bool
+		var resultErr error
+		withCommandRunner(runner, func() {
+			resultPath, resultSSH, resultErr = NewBackupEngine(Config{
+				Local: LocalConfig{DestRoot: localRoot},
+			}).BackupServer(context.Background(), WatchConfig{Namespace: "survival"}, "creative",
+				ServerConfig{Target: "local", DataDir: source}, "", "/nas/previous", true)
+		})
+		return resultPath, resultSSH, resultErr
+	}()
+	if err != nil {
+		t.Fatalf("local BackupServer failed: %v", err)
+	}
+	if usedSSH {
+		t.Fatal("local target reported SSH use")
+	}
+	if filepath.Dir(path) != filepath.Join(localRoot, "survival", "creative") {
+		t.Fatalf("destination = %q, want local hierarchy", path)
+	}
+	if !isBackupDir(filepath.Base(path)) {
+		t.Fatalf("destination %q does not end in a timestamp directory", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("local destination was not created: %v", err)
+	}
+	for _, arg := range rsyncArgs {
+		if strings.Contains(arg, "ssh") || strings.HasPrefix(arg, "--bwlimit=") {
+			t.Errorf("local rsync unexpectedly contains NAS option %q", arg)
+		}
+	}
+	if len(runner.commands) != 1 || runner.commands[0].name != "sync" {
+		t.Fatalf("commands = %#v, want only sync", runner.commands)
 	}
 }
 
