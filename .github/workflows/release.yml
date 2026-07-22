@@ -2,11 +2,15 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
 
 permissions:
   contents: write
+
+concurrency:
+  group: rolling-release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -23,17 +27,26 @@ jobs:
 
       - name: Build
         run: |
-          go build \
-            -ldflags "-X main.repoURL=https://github.com/hirrrooo/mc-backup.git -X main.version=${{ github.ref_name }}" \
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+            -ldflags "-X main.repoURL=https://github.com/hirrrooo/mc-backup.git -X main.version=${GITHUB_SHA::7}" \
             -o mc-backup-linux-amd64 \
             ./cmd/mc-backup
 
       - name: Generate checksum
         run: sha256sum mc-backup-linux-amd64 > mc-backup-linux-amd64.sha256
 
+      - name: Update latest tag
+        run: git push --force origin "${GITHUB_SHA}:refs/tags/latest"
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: latest
+          name: Latest main build
+          body: Automated build from ${{ github.sha }}.
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
           files: |
             mc-backup-linux-amd64
             mc-backup-linux-amd64.sha256
