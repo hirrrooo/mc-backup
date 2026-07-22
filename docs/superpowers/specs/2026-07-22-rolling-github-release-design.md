@@ -10,6 +10,8 @@ The GitHub Actions release workflow runs on each push to `main`. It runs the Go 
 
 The rolling release uses the `latest` tag and is a normal published release. Its title identifies it as the latest `main` build. This is required because GitHub's `releases/latest` endpoint excludes prereleases. Immutable versioned releases are not part of this change.
 
+Before publishing assets, the workflow force-updates the `latest` tag to the triggering commit. The release action then creates or updates the release associated with that tag.
+
 ## Build Contract
 
 The workflow produces these release assets:
@@ -48,5 +50,5 @@ The release upload executes only after tests and the build succeed. A failed wor
 ## Validation
 
 - Run `go test ./...` locally.
-- Validate the workflow's YAML structure, triggers, build environment, linker flags, release tag, prerelease status, and uploaded asset names.
+- Validate the workflow's YAML structure, triggers, build environment, linker flags, forced `latest` tag update, normal-release status, and uploaded asset names.
 - After the workflow is deployed and a `main` push completes, verify the GitHub release exposes both assets and that the existing `mc-backup update` checksum path resolves.
