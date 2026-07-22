@@ -6,9 +6,9 @@ Make `mc-backup update` install the newest validated `main` commit by publishing
 
 ## Scope
 
-The GitHub Actions release workflow runs on each push to `main`. It runs the Go test suite, builds a statically linked Linux amd64 binary, generates its SHA-256 sidecar, and replaces the assets of one rolling pre-release.
+The GitHub Actions release workflow runs on each push to `main`. It runs the Go test suite, builds a statically linked Linux amd64 binary, generates its SHA-256 sidecar, and replaces the assets of one rolling release.
 
-The rolling release uses the `latest` tag and is marked as a prerelease. Its title identifies it as the latest `main` build. Immutable versioned releases are not part of this change.
+The rolling release uses the `latest` tag and is a normal published release. Its title identifies it as the latest `main` build. This is required because GitHub's `releases/latest` endpoint excludes prereleases. Immutable versioned releases are not part of this change.
 
 ## Build Contract
 
@@ -37,7 +37,7 @@ go test ./...
 build linux/amd64 binary and checksum
     |
     v
-upsert prerelease tagged latest
+upsert normal release tagged latest
     |
     v
 mc-backup update downloads latest assets
