@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1712,6 +1713,122 @@ func TestApplyEnvOverridesIgnoresInvalidValues(t *testing.T) {
 	}
 	if !cfg.Servers["creative"].Enabled {
 		t.Errorf("Enabled changed on invalid env override: got false, want true")
+	}
+}
+
+func TestSaveSplitRollbackOnAutoFailure(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+
+	mainContent := []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n\n[local]\ndest_root = \"/tmp\"\n")
+	autoContent := []byte("[server.creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\n")
+
+	if err := os.WriteFile(cfgPath, mainContent, 0600); err != nil {
+		t.Fatalf("write main config: %v", err)
+	}
+	if err := os.WriteFile(autoPath, autoContent, 0600); err != nil {
+		t.Fatalf("write auto config: %v", err)
+	}
+
+	mainBefore, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoBefore, err := os.ReadFile(autoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadConfigFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Global.MaxMBps = 99.0
+
+	// Inject seam failure on replacing auto sidecar
+	origRename := renameFile
+	failedOnce := false
+	renameFile = func(src, dst string) error {
+		if !failedOnce && strings.HasSuffix(dst, "-auto.toml") {
+			failedOnce = true
+			return errors.New("simulated auto sidecar rename failure")
+		}
+		return origRename(src, dst)
+	}
+	defer func() { renameFile = origRename }()
+
+	err = saveSplit(cfgPath, cfg)
+	if err == nil {
+		t.Fatal("expected saveSplit to fail when auto sidecar replacement fails")
+	}
+
+	mainAfter, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read mainAfter: %v", err)
+	}
+	autoAfter, err := os.ReadFile(autoPath)
+	if err != nil {
+		t.Fatalf("read autoAfter: %v", err)
+	}
+
+	if !bytes.Equal(mainBefore, mainAfter) {
+		t.Errorf("main config file changed after failed saveSplit:\nBefore:\n%s\nAfter:\n%s", mainBefore, mainAfter)
+	}
+	if !bytes.Equal(autoBefore, autoAfter) {
+		t.Errorf("auto config file changed after failed saveSplit:\nBefore:\n%s\nAfter:\n%s", autoBefore, autoAfter)
+	}
+}
+
+func TestSaveSplitRollbackOnAutoRemovalFailure(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+
+	mainContent := []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n\n[local]\ndest_root = \"/tmp\"\n")
+	autoContent := []byte("[server.creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\n")
+
+	if err := os.WriteFile(cfgPath, mainContent, 0600); err != nil {
+		t.Fatalf("write main config: %v", err)
+	}
+	if err := os.WriteFile(autoPath, autoContent, 0600); err != nil {
+		t.Fatalf("write auto config: %v", err)
+	}
+
+	mainBefore, _ := os.ReadFile(cfgPath)
+	autoBefore, _ := os.ReadFile(autoPath)
+
+	cfg, err := loadConfigFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Remove creative server so len(auto) becomes 0 and autoPath should be removed
+	delete(cfg.Servers, "creative")
+
+	origRename := renameFile
+	failedOnce := false
+	renameFile = func(src, dst string) error {
+		if !failedOnce && src == autoPath {
+			failedOnce = true
+			return errors.New("simulated auto sidecar removal failure")
+		}
+		return origRename(src, dst)
+	}
+	defer func() { renameFile = origRename }()
+
+	err = saveSplit(cfgPath, cfg)
+	if err == nil {
+		t.Fatal("expected saveSplit to fail when auto sidecar removal fails")
+	}
+
+	mainAfter, _ := os.ReadFile(cfgPath)
+	autoAfter, _ := os.ReadFile(autoPath)
+
+	if !bytes.Equal(mainBefore, mainAfter) {
+		t.Errorf("main config changed when auto removal failed:\nBefore:\n%s\nAfter:\n%s", mainBefore, mainAfter)
+	}
+	if !bytes.Equal(autoBefore, autoAfter) {
+		t.Errorf("auto config changed when auto removal failed:\nBefore:\n%s\nAfter:\n%s", autoBefore, autoAfter)
 	}
 }
 

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -13,6 +14,12 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/fsnotify/fsnotify"
+)
+
+var (
+	renameFile = os.Rename
+	removeFile = os.Remove
+	chmodFile  = os.Chmod
 )
 
 type Duration struct{ time.Duration }
@@ -291,7 +298,7 @@ func SaveConfig(path string, cfg *Config) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := renameFile(tmp, path); err != nil {
 		return fmt.Errorf("replace %s: %w", path, err)
 	}
 	return nil
@@ -303,8 +310,9 @@ func autoServersPath(cfgPath string) string {
 
 // saveSplit writes cfg back to disk, sending auto-provisioned servers (those
 // present in <path>-auto.toml) to the auto file and everything else to the
-// main config. This prevents auto servers from being duplicated into the main
-// config and prevents their auto-only fields from being lost.
+// main config. It handles main and auto file updates transactionally: both temp
+// files are written and closed before replacement, and any replacement failure
+// rolls back already-replaced files to prevent partial state.
 func saveSplit(path string, cfg *Config) error {
 	autoNames := loadAutoServerNames(path)
 
@@ -316,10 +324,180 @@ func saveSplit(path string, cfg *Config) error {
 			delete(main.Servers, name)
 		}
 	}
-	if err := SaveConfig(path, main); err != nil {
-		return err
+
+	mainPath := path
+	autoPath := autoServersPath(path)
+	dir := filepath.Dir(mainPath)
+
+	mainExisted := false
+	mainMode := os.FileMode(0600)
+	if info, err := os.Stat(mainPath); err == nil {
+		mainExisted = true
+		mainMode = info.Mode().Perm()
 	}
-	return SaveAutoServers(path, auto)
+
+	autoExisted := false
+	if _, err := os.Stat(autoPath); err == nil {
+		autoExisted = true
+	}
+
+	// Step 1: Write and sync temp files for both main and auto
+	mainFile, err := os.CreateTemp(dir, filepath.Base(mainPath)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp for %s: %w", mainPath, err)
+	}
+	mainTemp := mainFile.Name()
+	defer func() { _ = removeFile(mainTemp) }()
+
+	if err := mainFile.Chmod(mainMode); err != nil {
+		mainFile.Close()
+		return fmt.Errorf("chmod temp %s: %w", mainTemp, err)
+	}
+
+	enc := toml.NewEncoder(mainFile)
+	enc.Indent = ""
+	if err := enc.Encode(main); err != nil {
+		mainFile.Close()
+		return fmt.Errorf("encode %s: %w", mainPath, err)
+	}
+	if err := mainFile.Sync(); err != nil {
+		mainFile.Close()
+		return fmt.Errorf("sync %s: %w", mainTemp, err)
+	}
+	if err := mainFile.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", mainTemp, err)
+	}
+
+	var autoTemp string
+	if len(auto) > 0 {
+		autoFile, err := os.CreateTemp(dir, filepath.Base(autoPath)+".*.tmp")
+		if err != nil {
+			return fmt.Errorf("create temp for %s: %w", autoPath, err)
+		}
+		autoTemp = autoFile.Name()
+		defer func() { _ = removeFile(autoTemp) }()
+
+		if err := autoFile.Chmod(0600); err != nil {
+			autoFile.Close()
+			return fmt.Errorf("chmod temp %s: %w", autoTemp, err)
+		}
+
+		writeAutoServersTo(autoFile, auto)
+
+		if err := autoFile.Sync(); err != nil {
+			autoFile.Close()
+			return fmt.Errorf("sync %s: %w", autoTemp, err)
+		}
+		if err := autoFile.Close(); err != nil {
+			return fmt.Errorf("close %s: %w", autoTemp, err)
+		}
+	}
+
+	// Step 2: Perform replacements with best-effort rollback
+	nowNano := time.Now().UnixNano()
+	mainBackup := filepath.Join(dir, fmt.Sprintf(".%s.bak.%d", filepath.Base(mainPath), nowNano))
+	autoBackup := filepath.Join(dir, fmt.Sprintf(".%s.bak.%d", filepath.Base(autoPath), nowNano))
+
+	mainBackupCreated := false
+	autoBackupCreated := false
+
+	defer func() {
+		if mainBackupCreated {
+			_ = removeFile(mainBackup)
+		}
+		if autoBackupCreated {
+			_ = removeFile(autoBackup)
+		}
+	}()
+
+	if mainExisted {
+		if err := renameFile(mainPath, mainBackup); err != nil {
+			return fmt.Errorf("backup %s: %w", mainPath, err)
+		}
+		mainBackupCreated = true
+	}
+
+	if err := renameFile(mainTemp, mainPath); err != nil {
+		if mainBackupCreated {
+			_ = renameFile(mainBackup, mainPath)
+			mainBackupCreated = false
+		}
+		return fmt.Errorf("replace %s: %w", mainPath, err)
+	}
+
+	if len(auto) > 0 {
+		if autoExisted {
+			if err := renameFile(autoPath, autoBackup); err != nil {
+				if mainBackupCreated {
+					_ = renameFile(mainBackup, mainPath)
+					mainBackupCreated = false
+				} else if !mainExisted {
+					_ = removeFile(mainPath)
+				}
+				return fmt.Errorf("backup %s: %w", autoPath, err)
+			}
+			autoBackupCreated = true
+		}
+
+		if err := renameFile(autoTemp, autoPath); err != nil {
+			if autoBackupCreated {
+				_ = renameFile(autoBackup, autoPath)
+				autoBackupCreated = false
+			}
+			if mainBackupCreated {
+				_ = renameFile(mainBackup, mainPath)
+				mainBackupCreated = false
+			} else if !mainExisted {
+				_ = removeFile(mainPath)
+			}
+			return fmt.Errorf("replace %s: %w", autoPath, err)
+		}
+
+		if err := chmodFile(autoPath, 0600); err != nil {
+			if autoExisted {
+				_ = renameFile(autoBackup, autoPath)
+				autoBackupCreated = false
+			} else {
+				_ = removeFile(autoPath)
+			}
+			if mainBackupCreated {
+				_ = renameFile(mainBackup, mainPath)
+				mainBackupCreated = false
+			} else if !mainExisted {
+				_ = removeFile(mainPath)
+			}
+			return fmt.Errorf("chmod %s: %w", autoPath, err)
+		}
+	} else if autoExisted {
+		if err := renameFile(autoPath, autoBackup); err != nil {
+			if mainBackupCreated {
+				_ = renameFile(mainBackup, mainPath)
+				mainBackupCreated = false
+			} else if !mainExisted {
+				_ = removeFile(mainPath)
+			}
+			return fmt.Errorf("remove auto %s: %w", autoPath, err)
+		}
+		autoBackupCreated = true
+	}
+
+	return nil
+}
+
+func writeAutoServersTo(f io.Writer, servers map[string]ServerConfig) {
+	for name, s := range servers {
+		fmt.Fprintf(f, "\n[server.%s]\n", name)
+		fmt.Fprintf(f, "enabled = %v\n", s.Enabled)
+		fmt.Fprintf(f, "target = %q\n", s.Target)
+		fmt.Fprintf(f, "container_name = %q\n", s.ContainerName)
+		fmt.Fprintf(f, "rcon_password = %q\n", s.RconPassword)
+		fmt.Fprintf(f, "# defaults to <watch.path>/<server>/mc-data if empty\n")
+		fmt.Fprintf(f, "data_dir = %q\n", s.DataDir)
+		fmt.Fprintf(f, "pause_if_no_players = %v\n", s.PauseIfNoPlayers)
+		if s.Excludes != nil {
+			fmt.Fprintf(f, "excludes = %s\n", formatTOMLStringSlice(*s.Excludes))
+		}
+	}
 }
 
 func cloneConfig(src *Config) *Config {
@@ -367,7 +545,7 @@ func loadAutoServerNames(cfgPath string) map[string]bool {
 func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 	autoPath := autoServersPath(cfgPath)
 	if len(servers) == 0 {
-		os.Remove(autoPath)
+		_ = removeFile(autoPath)
 		return nil
 	}
 	dir := filepath.Dir(autoPath)
@@ -376,21 +554,15 @@ func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 		return fmt.Errorf("create temp for %s: %w", autoPath, err)
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() { _ = removeFile(tmp) }()
 
-	for name, s := range servers {
-		fmt.Fprintf(f, "\n[server.%s]\n", name)
-		fmt.Fprintf(f, "enabled = %v\n", s.Enabled)
-		fmt.Fprintf(f, "target = %q\n", s.Target)
-		fmt.Fprintf(f, "container_name = %q\n", s.ContainerName)
-		fmt.Fprintf(f, "rcon_password = %q\n", s.RconPassword)
-		fmt.Fprintf(f, "# defaults to <watch.path>/<server>/mc-data if empty\n")
-		fmt.Fprintf(f, "data_dir = %q\n", s.DataDir)
-		fmt.Fprintf(f, "pause_if_no_players = %v\n", s.PauseIfNoPlayers)
-		if s.Excludes != nil {
-			fmt.Fprintf(f, "excludes = %s\n", formatTOMLStringSlice(*s.Excludes))
-		}
+	if err := chmodFile(tmp, 0600); err != nil {
+		f.Close()
+		return fmt.Errorf("chmod temp %s: %w", tmp, err)
 	}
+
+	writeAutoServersTo(f, servers)
+
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return fmt.Errorf("sync %s: %w", tmp, err)
@@ -398,10 +570,10 @@ func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, autoPath); err != nil {
+	if err := renameFile(tmp, autoPath); err != nil {
 		return fmt.Errorf("replace %s: %w", autoPath, err)
 	}
-	return nil
+	return chmodFile(autoPath, 0600)
 }
 
 func formatTOMLStringSlice(items []string) string {
