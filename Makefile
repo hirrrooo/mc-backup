@@ -1,6 +1,6 @@
-BINARY   := mc-backup
-GOOS     := linux
-GOARCH   := amd64
+BINARY   ?= mc-backup
+GOOS     ?= linux
+GOARCH   ?= amd64
 PREFIX   := /usr/local
 BINDIR   := $(PREFIX)/bin
 CONFDIR  := /etc/mc-backup
@@ -14,7 +14,7 @@ GOLANGCI_LINT_VERSION ?= v1.55.2
 .PHONY: build install uninstall clean lint
 
 build:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=0 go build -ldflags "-X main.repoURL=$(REPO_URL) -X main.version=$(VERSION)" -o $(BINARY) ./cmd/mc-backup
+	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=0 go build -ldflags "-X 'main.repoURL=$(REPO_URL)' -X 'main.version=$(VERSION)'" -o $(BINARY) ./cmd/mc-backup
 
 lint:
 	go run github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...

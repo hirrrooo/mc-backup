@@ -42,11 +42,7 @@ jobs:
         run: go test -race ./...
 
       - name: Build
-        run: |
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-            -ldflags "-X main.repoURL=https://github.com/hirrrooo/mc-backup.git -X main.version=${GITHUB_SHA::7}" \
-            -o mc-backup-linux-amd64 \
-            ./cmd/mc-backup
+        run: make build BINARY=mc-backup-linux-amd64 VERSION="${GITHUB_SHA::7}"
 
       - name: Generate checksum
         run: sha256sum mc-backup-linux-amd64 > mc-backup-linux-amd64.sha256
