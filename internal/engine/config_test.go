@@ -932,3 +932,223 @@ func TestGetConfigValueNormalizesServerName(t *testing.T) {
 		t.Errorf("GetConfigValue server.Creative.enabled = %q, want %q", got, "true")
 	}
 }
+
+func TestRetentionEnvOverridesAndGettersSetters(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+backup_interval = "12h"
+initial_delay = "1m"
+max_mbps = 50.0
+
+[local]
+dest_root = "/backups/local"
+
+[nas]
+ssh_user = "user1"
+ssh_host = "host1"
+ssh_port = 22
+ssh_key = "key1"
+dest_root = "/backups/nas"
+
+[retention]
+prune_days = 7
+prune_count = 14
+
+[server.creative]
+enabled = true
+target = "local"
+container_name = "creative-mc-1"
+rcon_password = "pass"
+data_dir = "/data"
+pause_if_no_players = false
+`)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("MC_BACKUP_RETENTION_PRUNE_DAYS", "30")
+	t.Setenv("MC_BACKUP_RETENTION_PRUNE_COUNT", "50")
+	t.Setenv("MC_BACKUP_GLOBAL_LISTEN_ADDR", "127.0.0.1:47991")
+	t.Setenv("MC_BACKUP_GLOBAL_MAX_MBPS", "100.0")
+	t.Setenv("MC_BACKUP_GLOBAL_BACKUP_INTERVAL", "6h")
+	t.Setenv("MC_BACKUP_GLOBAL_INITIAL_DELAY", "30s")
+	t.Setenv("MC_BACKUP_NAS_SSH_USER", "newuser")
+	t.Setenv("MC_BACKUP_NAS_SSH_KEY", "/new/key")
+	t.Setenv("MC_BACKUP_NAS_DEST_ROOT", "/new/nas")
+	t.Setenv("MC_BACKUP_SERVER_CREATIVE_ENABLED", "false")
+	t.Setenv("MC_BACKUP_SERVER_CREATIVE_CONTAINER_NAME", "new-container")
+	t.Setenv("MC_BACKUP_SERVER_CREATIVE_DATA_DIR", "/new/data")
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.Retention.PruneDays != 30 {
+		t.Errorf("PruneDays env override = %d, want 30", cfg.Retention.PruneDays)
+	}
+	if cfg.Retention.PruneCount != 50 {
+		t.Errorf("PruneCount env override = %d, want 50", cfg.Retention.PruneCount)
+	}
+	if cfg.Global.ListenAddr != "127.0.0.1:47991" {
+		t.Errorf("ListenAddr env override = %q", cfg.Global.ListenAddr)
+	}
+	if cfg.Global.MaxMBps != 100.0 {
+		t.Errorf("MaxMBps env override = %v", cfg.Global.MaxMBps)
+	}
+	if cfg.Global.BackupInterval.Duration != 6*time.Hour {
+		t.Errorf("BackupInterval env override = %v", cfg.Global.BackupInterval.Duration)
+	}
+	if cfg.Global.InitialDelay.Duration != 30*time.Second {
+		t.Errorf("InitialDelay env override = %v", cfg.Global.InitialDelay.Duration)
+	}
+
+	// Test GetConfigValue for all sections
+	if got := GetConfigValue(cfg, "global.listen_addr"); got != "127.0.0.1:47991" {
+		t.Errorf("GetConfigValue global.listen_addr = %q", got)
+	}
+	if got := GetConfigValue(cfg, "global.max_mbps"); got != "100.0" {
+		t.Errorf("GetConfigValue global.max_mbps = %q", got)
+	}
+	if got := GetConfigValue(cfg, "global.backup_interval"); got != "6h0m0s" {
+		t.Errorf("GetConfigValue global.backup_interval = %q", got)
+	}
+	if got := GetConfigValue(cfg, "global.initial_delay"); got != "30s" {
+		t.Errorf("GetConfigValue global.initial_delay = %q", got)
+	}
+	if got := GetConfigValue(cfg, "local.dest_root"); got != "/backups/local" {
+		t.Errorf("GetConfigValue local.dest_root = %q", got)
+	}
+	if got := GetConfigValue(cfg, "nas.ssh_user"); got != "newuser" {
+		t.Errorf("GetConfigValue nas.ssh_user = %q", got)
+	}
+	if got := GetConfigValue(cfg, "nas.ssh_host"); got != "host1" {
+		t.Errorf("GetConfigValue nas.ssh_host = %q", got)
+	}
+	if got := GetConfigValue(cfg, "nas.ssh_port"); got != "22" {
+		t.Errorf("GetConfigValue nas.ssh_port = %q", got)
+	}
+	if got := GetConfigValue(cfg, "nas.ssh_key"); got != "/new/key" {
+		t.Errorf("GetConfigValue nas.ssh_key = %q", got)
+	}
+	if got := GetConfigValue(cfg, "nas.dest_root"); got != "/new/nas" {
+		t.Errorf("GetConfigValue nas.dest_root = %q", got)
+	}
+	if got := GetConfigValue(cfg, "retention.prune_days"); got != "30" {
+		t.Errorf("GetConfigValue retention.prune_days = %q", got)
+	}
+	if got := GetConfigValue(cfg, "retention.prune_count"); got != "50" {
+		t.Errorf("GetConfigValue retention.prune_count = %q", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.enabled"); got != "false" {
+		t.Errorf("GetConfigValue server.creative.enabled = %q", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.container_name"); got != "new-container" {
+		t.Errorf("GetConfigValue server.creative.container_name = %q", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.rcon_password"); got != "pass" {
+		t.Errorf("GetConfigValue server.creative.rcon_password = %q", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.data_dir"); got != "/new/data" {
+		t.Errorf("GetConfigValue server.creative.data_dir = %q", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.pause_if_no_players"); got != "false" {
+		t.Errorf("GetConfigValue server.creative.pause_if_no_players = %q", got)
+	}
+	if got := GetConfigValue(cfg, "invalid"); got != "" {
+		t.Errorf("GetConfigValue single-part key = %q, want empty", got)
+	}
+	if got := GetConfigValue(cfg, "unknown.field"); got != "" {
+		t.Errorf("GetConfigValue unknown section = %q, want empty", got)
+	}
+
+	// Unset env overrides so SetConfigValue round-trip can be verified
+	os.Unsetenv("MC_BACKUP_RETENTION_PRUNE_DAYS")
+	os.Unsetenv("MC_BACKUP_RETENTION_PRUNE_COUNT")
+	os.Unsetenv("MC_BACKUP_GLOBAL_LISTEN_ADDR")
+	os.Unsetenv("MC_BACKUP_GLOBAL_MAX_MBPS")
+	os.Unsetenv("MC_BACKUP_GLOBAL_BACKUP_INTERVAL")
+	os.Unsetenv("MC_BACKUP_GLOBAL_INITIAL_DELAY")
+	os.Unsetenv("MC_BACKUP_NAS_SSH_USER")
+	os.Unsetenv("MC_BACKUP_NAS_SSH_KEY")
+	os.Unsetenv("MC_BACKUP_NAS_DEST_ROOT")
+	os.Unsetenv("MC_BACKUP_SERVER_CREATIVE_ENABLED")
+	os.Unsetenv("MC_BACKUP_SERVER_CREATIVE_CONTAINER_NAME")
+	os.Unsetenv("MC_BACKUP_SERVER_CREATIVE_DATA_DIR")
+
+	// Test SetConfigValue for retention, nas, local
+	if err := SetConfigValue(cfgPath, "retention.prune_days", "15"); err != nil {
+		t.Fatalf("SetConfigValue retention.prune_days: %v", err)
+	}
+	if err := SetConfigValue(cfgPath, "nas.ssh_port", "2222"); err != nil {
+		t.Fatalf("SetConfigValue nas.ssh_port: %v", err)
+	}
+	if err := SetConfigValue(cfgPath, "local.dest_root", "/new/local"); err != nil {
+		t.Fatalf("SetConfigValue local.dest_root: %v", err)
+	}
+
+	reloaded, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if reloaded.Retention.PruneDays != 15 {
+		t.Errorf("reloaded PruneDays = %d, want 15", reloaded.Retention.PruneDays)
+	}
+	if reloaded.NAS.SSHPort != 2222 {
+		t.Errorf("reloaded SSHPort = %d, want 2222", reloaded.NAS.SSHPort)
+	}
+	if reloaded.Local.DestRoot != "/new/local" {
+		t.Errorf("reloaded DestRoot = %q, want /new/local", reloaded.Local.DestRoot)
+	}
+}
+
+func TestSetConfigValueErrors(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[global]\nlisten_addr=\"127.0.0.1:47990\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetConfigValue(cfgPath, "singlekey", "val"); err == nil {
+		t.Error("expected error for single key, got nil")
+	}
+	if err := SetConfigValue(cfgPath, "server.creative", "val"); err == nil {
+		t.Error("expected error for missing server field, got nil")
+	}
+	if err := SetConfigValue(cfgPath, "unknownsection.field", "val"); err == nil {
+		t.Error("expected error for unknown section, got nil")
+	}
+}
+
+func TestDurationMarshalUnmarshal(t *testing.T) {
+	d := Duration{Duration: 5 * time.Minute}
+	bytes, err := d.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText failed: %v", err)
+	}
+	if string(bytes) != "5m0s" {
+		t.Errorf("MarshalText = %q, want '5m0s'", string(bytes))
+	}
+
+	var d2 Duration
+	if err := d2.UnmarshalText([]byte("10m")); err != nil {
+		t.Fatalf("UnmarshalText failed: %v", err)
+	}
+	if d2.Duration != 10*time.Minute {
+		t.Errorf("UnmarshalText = %v, want 10m", d2.Duration)
+	}
+}
+
+func TestWriteLastSnapshotHelper(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	writeLastSnapshot(cfgPath, "creative", "/local/path", "/nas/path")
+	m := readLastSnapshots(cfgPath)
+	if entry, ok := m["creative"]; !ok || entry.Local != "/local/path" || entry.NAS != "/nas/path" {
+		t.Fatalf("writeLastSnapshot failed: %#v", entry)
+	}
+}

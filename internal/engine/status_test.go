@@ -254,3 +254,37 @@ func TestStatusAPITokenRotation(t *testing.T) {
 		t.Fatalf("step 3 new token secret-v2: got code %d, canceled=%v, want 200", rec.Code, canceled)
 	}
 }
+
+func TestPrintDashboard(t *testing.T) {
+	jt := NewJobTracker()
+	jt.Add("minecraft/verylongservernamehere", &JobInfo{
+		ServerName: "verylongservernamehere",
+		Snapshot:   "20250611-1200",
+		State:      "Saving",
+		BytesMoved: 1073741824,
+		TotalSize:  2147483648,
+	})
+	jt.Add("minecraft/calculating", &JobInfo{
+		ServerName: "calc",
+		Snapshot:   "20250611-1300",
+		State:      "Saving",
+		BytesMoved: 0,
+		TotalSize:  0,
+	})
+
+	srv := httptest.NewServer(newStatusMux(jt, StatusCallbacks{}, func() string { return "" }))
+	defer srv.Close()
+
+	addr := srv.Listener.Addr().String()
+	if err := PrintDashboard(addr); err != nil {
+		t.Fatalf("PrintDashboard failed: %v", err)
+	}
+
+	emptyJt := NewJobTracker()
+	emptySrv := httptest.NewServer(newStatusMux(emptyJt, StatusCallbacks{}, func() string { return "" }))
+	defer emptySrv.Close()
+
+	if err := PrintDashboard(emptySrv.Listener.Addr().String()); err != nil {
+		t.Fatalf("PrintDashboard with empty jobs failed: %v", err)
+	}
+}

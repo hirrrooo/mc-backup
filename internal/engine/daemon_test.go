@@ -138,3 +138,124 @@ func TestServerMatches(t *testing.T) {
 		}
 	}
 }
+
+func TestDaemonCancel(t *testing.T) {
+	d := NewDaemon("/tmp/config.toml", &Config{})
+	canceled := false
+	d.cancelMu.Lock()
+	d.cancelFn = func() { canceled = true }
+	d.cancelMu.Unlock()
+
+	d.Cancel()
+
+	if !canceled {
+		t.Error("Cancel() did not invoke cancelFn")
+	}
+}
+
+func TestSnapshotTimeAndWatchKey(t *testing.T) {
+	t.Run("snapshotTime", func(t *testing.T) {
+		if !snapshotTime("invalid").IsZero() {
+			t.Error("snapshotTime('invalid') should be zero")
+		}
+		if !snapshotTime("20250611_1200").IsZero() {
+			t.Error("snapshotTime('20250611_1200') should be zero")
+		}
+		st := snapshotTime("/backups/20250611-1200")
+		if st.IsZero() {
+			t.Error("snapshotTime('/backups/20250611-1200') should not be zero")
+		}
+	})
+
+	t.Run("watchKey", func(t *testing.T) {
+		tmp := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(tmp, "survival"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		cfg := &Config{
+			Watch: []WatchConfig{{Path: tmp, Namespace: "minecraft"}},
+		}
+		key := watchKey(cfg, "survival")
+		if key != "minecraft/survival" {
+			t.Errorf("watchKey = %q, want 'minecraft/survival'", key)
+		}
+		if keyAbs := watchKey(cfg, "absent"); keyAbs != "" {
+			t.Errorf("watchKey absent = %q, want empty", keyAbs)
+		}
+	})
+
+	t.Run("serverNames", func(t *testing.T) {
+		servers := []struct {
+			Watch  WatchConfig
+			Name   string
+			Server ServerConfig
+		}{
+			{Name: "creative"},
+			{Name: "survival"},
+		}
+		names := serverNames(servers)
+		if len(names) != 2 || names[0] != "creative" || names[1] != "survival" {
+			t.Errorf("serverNames = %v, want [creative survival]", names)
+		}
+	})
+}
+
+func TestRunBackupCycleLocalServer(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	watchRoot := filepath.Join(root, "watch")
+	if err := os.MkdirAll(filepath.Join(watchRoot, "survival"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	localRoot := filepath.Join(root, "local")
+
+	cfg := &Config{
+		Local: LocalConfig{DestRoot: localRoot},
+		Watch: []WatchConfig{{Path: watchRoot, Namespace: "minecraft"}},
+		Servers: map[string]ServerConfig{
+			"survival": {
+				Enabled:       true,
+				Target:        "local",
+				ContainerName: "survival-mc-1",
+			},
+		},
+	}
+
+	d := NewDaemon(cfgPath, cfg)
+
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		if name == "docker" && len(args) > 0 && args[0] == "ps" {
+			return &mockOutputCommand{
+				recordingCommand: recordingCommand{name: name, args: args},
+				out:              []byte("survival-mc-1"),
+			}
+		}
+		return &recordingCommand{name: name, args: args}
+	})
+
+	previousRsyncRunner := rsyncRunner
+	rsyncRunner = func(_ context.Context, _ []string, _ func(int64, int64)) error {
+		return nil
+	}
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	withCommandRunner(runner, func() {
+		d.runBackupCycle(context.Background(), "survival", false)
+	})
+
+	snapshots := readLastSnapshots(cfgPath)
+	if entry, ok := snapshots["survival"]; !ok || entry.Local == "" {
+		t.Fatalf("runBackupCycle failed to write snapshot entry: %#v", snapshots)
+	}
+}
+
+func TestWaitForContainersNoServers(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "config.toml")
+	d := NewDaemon(cfgPath, &Config{})
+	d.waitForContainers(context.Background(), d.ac.Load())
+}

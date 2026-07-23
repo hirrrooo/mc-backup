@@ -21,7 +21,7 @@ type recordingCommand struct {
 
 func (c *recordingCommand) Run() error                      { return c.err }
 func (c *recordingCommand) Output() ([]byte, error)         { return nil, nil }
-func (c *recordingCommand) CombinedOutput() ([]byte, error) { return nil, nil }
+func (c *recordingCommand) CombinedOutput() ([]byte, error) { return nil, c.err }
 func (c *recordingCommand) SetStdout(_ io.Writer)           {}
 func (c *recordingCommand) SetStderr(_ io.Writer)           {}
 func (c *recordingCommand) SetEnv(env []string)             { c.env = append(c.env, env...) }
@@ -401,5 +401,246 @@ func TestBackupServerSyncFailureEmitsWarningAndContinues(t *testing.T) {
 	}
 	if !strings.Contains(logStr, "disk sync timeout") {
 		t.Errorf("expected log output to contain sync error message 'disk sync timeout': %s", logStr)
+	}
+}
+
+func TestBackupServerDeferredSaveOnRunsWhenFlushFails(t *testing.T) {
+	localRoot := t.TempDir()
+	source := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var commands []string
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		cmdStr := name + " " + strings.Join(args, " ")
+		commands = append(commands, cmdStr)
+		rec := &recordingCommand{name: name, args: args}
+		if strings.Contains(cmdStr, "save-all flush") {
+			rec.err = errors.New("flush failed")
+			cancel() // cancel context so runRcon fails fast
+		}
+		return rec
+	})
+
+	previousRsyncRunner := rsyncRunner
+	rsyncRunner = func(_ context.Context, _ []string, _ func(int64, int64)) error {
+		return nil
+	}
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	withCommandRunner(runner, func() {
+		engine := NewBackupEngine(Config{Local: LocalConfig{DestRoot: localRoot}})
+		_, _, err := engine.BackupServer(
+			ctx, WatchConfig{Namespace: "survival"}, "creative",
+			ServerConfig{Target: "local", DataDir: source}, "", "", false,
+		)
+		if err == nil {
+			t.Fatal("expected error on flush failure, got nil")
+		}
+		if !strings.Contains(err.Error(), "save-all flush") {
+			t.Fatalf("expected error containing 'save-all flush', got %v", err)
+		}
+	})
+
+	if len(commands) < 3 {
+		t.Fatalf("expected at least 3 commands (save-off, save-all flush, save-on), got %d: %v", len(commands), commands)
+	}
+	hasSaveOff := false
+	hasFlush := false
+	hasSaveOn := false
+	for _, cmd := range commands {
+		if strings.Contains(cmd, "save-off") {
+			hasSaveOff = true
+		}
+		if strings.Contains(cmd, "save-all flush") {
+			hasFlush = true
+		}
+		if strings.Contains(cmd, "save-on") {
+			hasSaveOn = true
+		}
+	}
+	if !hasSaveOff || !hasFlush || !hasSaveOn {
+		t.Fatalf("commands missing required sequence, got: %v", commands)
+	}
+}
+
+func TestBackupServerDeferredSaveOnRunsWhenRsyncFails(t *testing.T) {
+	localRoot := t.TempDir()
+	source := t.TempDir()
+
+	var commands []string
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		cmdStr := name + " " + strings.Join(args, " ")
+		commands = append(commands, cmdStr)
+		return &recordingCommand{name: name, args: args}
+	})
+
+	previousRsyncRunner := rsyncRunner
+	rsyncRunner = func(_ context.Context, _ []string, _ func(int64, int64)) error {
+		return errors.New("rsync connection lost")
+	}
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	withCommandRunner(runner, func() {
+		engine := NewBackupEngine(Config{Local: LocalConfig{DestRoot: localRoot}})
+		_, _, err := engine.BackupServer(
+			context.Background(), WatchConfig{Namespace: "survival"}, "creative",
+			ServerConfig{Target: "local", DataDir: source}, "", "", false,
+		)
+		if err == nil {
+			t.Fatal("expected error on rsync failure, got nil")
+		}
+		if !strings.Contains(err.Error(), "rsync connection lost") {
+			t.Fatalf("expected error containing 'rsync connection lost', got %v", err)
+		}
+	})
+
+	hasSaveOn := false
+	for _, cmd := range commands {
+		if strings.Contains(cmd, "save-on") {
+			hasSaveOn = true
+		}
+	}
+	if !hasSaveOn {
+		t.Fatalf("expected deferred save-on to execute after rsync failure, commands: %v", commands)
+	}
+}
+
+func TestBackupServerOnlineHappyPathCommandOrdering(t *testing.T) {
+	localRoot := t.TempDir()
+	source := t.TempDir()
+
+	var commands []string
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		cmdStr := name + " " + strings.Join(args, " ")
+		commands = append(commands, cmdStr)
+		return &recordingCommand{name: name, args: args}
+	})
+
+	rsyncCalled := false
+	previousRsyncRunner := rsyncRunner
+	rsyncRunner = func(_ context.Context, _ []string, _ func(int64, int64)) error {
+		rsyncCalled = true
+		return nil
+	}
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	withCommandRunner(runner, func() {
+		engine := NewBackupEngine(Config{Local: LocalConfig{DestRoot: localRoot}})
+		destPath, usedSSH, err := engine.BackupServer(
+			context.Background(), WatchConfig{Namespace: "survival"}, "creative",
+			ServerConfig{Target: "local", DataDir: source}, "", "", false,
+		)
+		if err != nil {
+			t.Fatalf("BackupServer failed: %v", err)
+		}
+		if usedSSH {
+			t.Error("expected usedSSH = false for local target")
+		}
+		if destPath == "" {
+			t.Error("expected non-empty destPath")
+		}
+	})
+
+	if !rsyncCalled {
+		t.Error("expected rsyncRunner to be called")
+	}
+
+	// Verify order: save-off -> save-all flush -> sync -> save-on
+	if len(commands) < 4 {
+		t.Fatalf("expected at least 4 commands, got %d: %v", len(commands), commands)
+	}
+	if !strings.Contains(commands[0], "save-off") {
+		t.Errorf("command 0 = %q, want save-off", commands[0])
+	}
+	if !strings.Contains(commands[1], "save-all flush") {
+		t.Errorf("command 1 = %q, want save-all flush", commands[1])
+	}
+	if commands[2] != "sync " && commands[2] != "sync" {
+		t.Errorf("command 2 = %q, want sync", commands[2])
+	}
+	if !strings.Contains(commands[3], "save-on") {
+		t.Errorf("command 3 = %q, want save-on", commands[3])
+	}
+}
+
+func TestBackupServerNASReadyAndEnsureDir(t *testing.T) {
+	nas := NASConfig{
+		SSHUser:  "backup",
+		SSHHost:  "nas.local",
+		SSHPort:  2222,
+		DestRoot: "/volume1/backups",
+	}
+
+	t.Run("checkNASReady sentinel present", func(t *testing.T) {
+		var executed []string
+		runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+			executed = append(executed, name+" "+strings.Join(args, " "))
+			return &recordingCommand{name: name, args: args}
+		})
+		withCommandRunner(runner, func() {
+			err := checkNASReady(context.Background(), nas)
+			if err != nil {
+				t.Fatalf("checkNASReady failed: %v", err)
+			}
+		})
+		if len(executed) != 1 || !strings.Contains(executed[0], "test -f") {
+			t.Fatalf("unexpected executed commands: %v", executed)
+		}
+	})
+
+	t.Run("checkNASReady sentinel missing error", func(t *testing.T) {
+		runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+			return &recordingCommand{name: name, args: args, err: errors.New("file not found")}
+		})
+		withCommandRunner(runner, func() {
+			err := checkNASReady(context.Background(), nas)
+			if err == nil || !strings.Contains(err.Error(), "NAS sentinel") {
+				t.Fatalf("expected NAS sentinel error, got %v", err)
+			}
+		})
+	})
+
+	t.Run("ensureNASDir runs mkdir -p", func(t *testing.T) {
+		var executed []string
+		runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+			executed = append(executed, name+" "+strings.Join(args, " "))
+			return &recordingCommand{name: name, args: args}
+		})
+		withCommandRunner(runner, func() {
+			err := ensureNASDir(context.Background(), nas, "/volume1/backups/mc/survival")
+			if err != nil {
+				t.Fatalf("ensureNASDir failed: %v", err)
+			}
+		})
+		if len(executed) != 1 || !strings.Contains(executed[0], "mkdir -p") {
+			t.Fatalf("unexpected executed commands: %v", executed)
+		}
+	})
+}
+
+func TestRunRsyncExecution(t *testing.T) {
+	ctx := context.Background()
+	// Test runRsync without progress using standard true command
+	err := runRsync(ctx, []string{"true"}, nil)
+	if err != nil {
+		t.Fatalf("runRsync failed: %v", err)
+	}
+
+	// Test runRsync with progress callback using a dummy script that ignores flags
+	script := filepath.Join(t.TempDir(), "dummy-rsync.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"    1,048,576  50%   10.00MB/s    0:00:05\"\n"), 0755); err != nil {
+		t.Fatalf("failed to write dummy script: %v", err)
+	}
+
+	progressCalled := false
+	err = runRsync(ctx, []string{script}, func(b, tot int64) {
+		progressCalled = true
+	})
+	if err != nil {
+		t.Fatalf("runRsync with progress failed: %v", err)
+	}
+	if !progressCalled {
+		t.Error("expected progress callback to be invoked")
 	}
 }

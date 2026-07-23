@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -98,5 +99,43 @@ func TestCountPlayers(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("countPlayers(%q) = %d, want %d", tt.output, got, tt.want)
 		}
+	}
+}
+
+func TestCountPlayersMalformed(t *testing.T) {
+	tests := []struct {
+		output string
+		want   int
+	}{
+		{"There are  of a max of 20", -1},
+		{"There are invalid of a max of 20", -1},
+		{"There are 5 players online", -1}, // missing " of a max of "
+	}
+	for _, tt := range tests {
+		if got := countPlayers(tt.output); got != tt.want {
+			t.Errorf("countPlayers(%q) = %d, want %d", tt.output, got, tt.want)
+		}
+	}
+}
+
+func TestRunRconRetriesFailure(t *testing.T) {
+	attempts := 0
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		attempts++
+		return &recordingCommand{name: name, args: args, err: errors.New("rcon connection refused")}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately so sleep won't happen
+
+	withCommandRunner(runner, func() {
+		err := runRcon(ctx, "container", "pass", "list", 3, 0)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt before context cancel return, got %d", attempts)
 	}
 }

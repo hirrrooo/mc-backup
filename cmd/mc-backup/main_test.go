@@ -190,10 +190,32 @@ api_token = "cli-secret-token"
 
 	// Test backupCmd
 	receivedAuth = ""
-	os.Args = []string{"mc-backup", "backup", "--config", cfgPath, "survival"}
+	var receivedQuery string
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		receivedQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv2.Close()
+
+	cfgPath2 := filepath.Join(tmp, "config2.toml")
+	cfgContent2 := fmt.Sprintf(`
+[global]
+listen_addr = "%s"
+api_token = "cli-secret-token"
+`, srv2.Listener.Addr().String())
+	if err := os.WriteFile(cfgPath2, []byte(cfgContent2), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	os.Args = []string{"mc-backup", "backup", "--config", cfgPath2, "--offline", "creative"}
 	backupCmd()
 	if receivedAuth != "Bearer cli-secret-token" {
 		t.Errorf("backup CLI command auth header = %q, want %q", receivedAuth, "Bearer cli-secret-token")
+	}
+	if !strings.Contains(receivedQuery, "offline=true") || !strings.Contains(receivedQuery, "server=creative") {
+		t.Errorf("backup CLI query = %q, want offline=true and server=creative", receivedQuery)
 	}
 }
 
@@ -271,4 +293,73 @@ func TestReadResponseBody(t *testing.T) {
 			t.Fatalf("expected 'underlying read error', got %v", err)
 		}
 	})
+}
+
+func TestVerifyChecksumEmptySidecar(t *testing.T) {
+	binPath := filepath.Join(t.TempDir(), "mc-backup")
+	if err := os.WriteFile(binPath, []byte("real-bytes"), 0600); err != nil {
+		t.Fatalf("write bin: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("   \n\t  "))
+	}))
+	defer srv.Close()
+
+	err := verifyChecksum(binPath, srv.URL)
+	if err == nil {
+		t.Fatal("expected error on empty checksum sidecar, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected 'empty' error, got: %v", err)
+	}
+}
+
+func TestVerifyChecksumUppercaseHexSuccess(t *testing.T) {
+	body := []byte("binary-contents-for-uppercase-hash")
+	binPath := filepath.Join(t.TempDir(), "mc-backup")
+	if err := os.WriteFile(binPath, body, 0600); err != nil {
+		t.Fatalf("write bin: %v", err)
+	}
+	sum := sha256.Sum256(body)
+	uppercaseChecksum := fmt.Sprintf("%X  mc-backup-linux-amd64\n", sum)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(uppercaseChecksum))
+	}))
+	defer srv.Close()
+
+	if err := verifyChecksum(binPath, srv.URL); err != nil {
+		t.Fatalf("verifyChecksum with uppercase hex failed: %v", err)
+	}
+}
+
+func TestVerifyChecksumMissingBinaryFile(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("a" + strings.Repeat("0", 63) + "  mc-backup-linux-amd64\n"))
+	}))
+	defer srv.Close()
+
+	missingPath := filepath.Join(t.TempDir(), "does-not-exist")
+	err := verifyChecksum(missingPath, srv.URL)
+	if err == nil {
+		t.Fatal("expected error opening missing binary file, got nil")
+	}
+	if !strings.Contains(err.Error(), "open") {
+		t.Fatalf("expected open error, got: %v", err)
+	}
+}
+
+func TestDeriveReleaseURL(t *testing.T) {
+	url := deriveReleaseURL("https://github.com/hirrrooo/mc-backup.git")
+	want := "https://github.com/hirrrooo/mc-backup/releases/latest/download/mc-backup-linux-amd64"
+	if url != want {
+		t.Errorf("deriveReleaseURL = %q, want %q", url, want)
+	}
+}
+
+func TestFindConfig(t *testing.T) {
+	path := findConfig()
+	if path == "" {
+		t.Fatal("findConfig returned empty string")
+	}
 }
