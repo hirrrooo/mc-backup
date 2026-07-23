@@ -431,91 +431,123 @@ func applyEnvOverrides(cfg *Config) {
 				continue
 			}
 			if s, exists := cfg.Servers[name]; exists {
-				setServerField(&s, field, val)
+				if err := setServerField(&s, field, val); err != nil {
+					slog.Warn("ignoring invalid environment override", "var", kv[0], "error", err)
+					continue
+				}
 				cfg.Servers[name] = s
 			}
 			continue
 		}
 
 		key := strings.Join(parts[3:], "_")
+		var setErr error
 		switch section {
 		case "global":
-			setGlobalField(&cfg.Global, key, val)
+			setErr = setGlobalField(&cfg.Global, key, val)
 		case "nas":
-			setNASField(&cfg.NAS, key, val)
+			setErr = setNASField(&cfg.NAS, key, val)
 		case "local":
-			setLocalField(&cfg.Local, key, val)
+			setErr = setLocalField(&cfg.Local, key, val)
 		case "retention":
-			setRetentionField(&cfg.Retention, key, val)
+			setErr = setRetentionField(&cfg.Retention, key, val)
+		}
+		if setErr != nil {
+			slog.Warn("ignoring invalid environment override", "var", kv[0], "error", setErr)
 		}
 	}
 }
 
-func setLocalField(v *LocalConfig, key, val string) {
+func setLocalField(v *LocalConfig, key, val string) error {
 	if key == "dest_root" {
 		v.DestRoot = normalizeDestRoot(val)
+		return nil
 	}
+	return fmt.Errorf("unknown local field: %s", key)
 }
 
-func setGlobalField(v *GlobalConfig, key, val string) {
+func setGlobalField(v *GlobalConfig, key, val string) error {
 	switch key {
 	case "listen_addr":
 		v.ListenAddr = val
 	case "api_token":
 		v.APIToken = val
 	case "max_mbps":
-		if f, err := strconv.ParseFloat(val, 64); err == nil {
-			v.MaxMBps = f
+		f, err := strconv.ParseFloat(val, 64)
+		if err != nil || f < 0 {
+			return fmt.Errorf("invalid max_mbps: %q", val)
 		}
+		v.MaxMBps = f
 	case "backup_interval":
 		d, err := time.ParseDuration(val)
-		if err == nil {
-			v.BackupInterval = Duration{d}
+		if err != nil {
+			return fmt.Errorf("invalid backup_interval duration: %q", val)
 		}
+		v.BackupInterval = Duration{d}
 	case "initial_delay":
 		d, err := time.ParseDuration(val)
-		if err == nil {
-			v.InitialDelay = Duration{d}
+		if err != nil {
+			return fmt.Errorf("invalid initial_delay duration: %q", val)
 		}
+		v.InitialDelay = Duration{d}
 	case "excludes":
 		v.Excludes = parseExcludesValue(val)
+	default:
+		return fmt.Errorf("unknown global field: %s", key)
 	}
+	return nil
 }
 
-func setNASField(v *NASConfig, key, val string) {
+func setNASField(v *NASConfig, key, val string) error {
 	switch key {
 	case "ssh_user":
 		v.SSHUser = val
 	case "ssh_host":
 		v.SSHHost = val
 	case "ssh_port":
-		if i, err := strconv.Atoi(val); err == nil {
-			v.SSHPort = i
+		i, err := strconv.Atoi(val)
+		if err != nil || i <= 0 || i > 65535 {
+			return fmt.Errorf("invalid ssh_port: %q", val)
 		}
+		v.SSHPort = i
 	case "ssh_key":
 		v.SSHKey = val
 	case "dest_root":
 		v.DestRoot = normalizeDestRoot(val)
+	default:
+		return fmt.Errorf("unknown nas field: %s", key)
 	}
+	return nil
 }
 
-func setRetentionField(v *RetentionConfig, key, val string) {
+func setRetentionField(v *RetentionConfig, key, val string) error {
 	switch key {
 	case "prune_days":
-		if i, err := strconv.Atoi(val); err == nil {
-			v.PruneDays = i
+		i, err := strconv.Atoi(val)
+		if err != nil || i < 0 {
+			return fmt.Errorf("invalid prune_days: %q", val)
 		}
+		v.PruneDays = i
 	case "prune_count":
-		if i, err := strconv.Atoi(val); err == nil {
-			v.PruneCount = i
+		i, err := strconv.Atoi(val)
+		if err != nil || i < 0 {
+			return fmt.Errorf("invalid prune_count: %q", val)
 		}
+		v.PruneCount = i
+	default:
+		return fmt.Errorf("unknown retention field: %s", key)
 	}
+	return nil
 }
 
-func setServerField(s *ServerConfig, key, val string) {
+func setServerField(s *ServerConfig, key, val string) error {
 	switch key {
 	case "enabled":
-		s.Enabled = strings.ToLower(val) == "true"
+		b, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid bool for enabled: %q", val)
+		}
+		s.Enabled = b
 	case "target":
 		s.Target = val
 	case "container_name":
@@ -525,10 +557,17 @@ func setServerField(s *ServerConfig, key, val string) {
 	case "data_dir":
 		s.DataDir = val
 	case "pause_if_no_players":
-		s.PauseIfNoPlayers = strings.ToLower(val) == "true"
+		b, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid bool for pause_if_no_players: %q", val)
+		}
+		s.PauseIfNoPlayers = b
 	case "excludes":
 		s.Excludes = parseExcludesValue(val)
+	default:
+		return fmt.Errorf("unknown server field: %s", key)
 	}
+	return nil
 }
 
 var serverFieldKeys = []string{
@@ -666,13 +705,21 @@ func SetConfigValue(path, key, val string) error {
 
 	switch section {
 	case "global":
-		setGlobalField(&cfg.Global, parts[1], val)
+		if err := setGlobalField(&cfg.Global, parts[1], val); err != nil {
+			return err
+		}
 	case "nas":
-		setNASField(&cfg.NAS, parts[1], val)
+		if err := setNASField(&cfg.NAS, parts[1], val); err != nil {
+			return err
+		}
 	case "local":
-		setLocalField(&cfg.Local, parts[1], val)
+		if err := setLocalField(&cfg.Local, parts[1], val); err != nil {
+			return err
+		}
 	case "retention":
-		setRetentionField(&cfg.Retention, parts[1], val)
+		if err := setRetentionField(&cfg.Retention, parts[1], val); err != nil {
+			return err
+		}
 	case "server":
 		if len(parts) < 3 {
 			return fmt.Errorf("server key requires <name>.<field>")
@@ -680,7 +727,9 @@ func SetConfigValue(path, key, val string) error {
 		serverName := strings.ToLower(parts[1])
 		field := parts[2]
 		s := cfg.Servers[serverName]
-		setServerField(&s, field, val)
+		if err := setServerField(&s, field, val); err != nil {
+			return err
+		}
 		cfg.Servers[serverName] = s
 	default:
 		return fmt.Errorf("unknown section: %s", section)

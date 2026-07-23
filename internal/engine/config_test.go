@@ -1606,6 +1606,115 @@ func TestSetConfigValueValidation(t *testing.T) {
 	}
 }
 
+func TestSetConfigValueStrictValidation(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+
+	mainContent := []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n\n[local]\ndest_root = \"/tmp\"\n")
+	autoContent := []byte("[server.creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\n")
+
+	if err := os.WriteFile(cfgPath, mainContent, 0600); err != nil {
+		t.Fatalf("write main config: %v", err)
+	}
+	if err := os.WriteFile(autoPath, autoContent, 0600); err != nil {
+		t.Fatalf("write auto config: %v", err)
+	}
+
+	invalidCases := []struct {
+		name string
+		key  string
+		val  string
+	}{
+		// Unknown section fields
+		{"unknown global field", "global.unknown_field", "val"},
+		{"unknown nas field", "nas.unknown_field", "val"},
+		{"unknown local field", "local.unknown_field", "val"},
+		{"unknown retention field", "retention.unknown_field", "val"},
+		{"unknown server field", "server.creative.unknown_field", "val"},
+
+		// Invalid values & bounds
+		{"invalid duration backup_interval", "global.backup_interval", "not_a_duration"},
+		{"invalid duration initial_delay", "global.initial_delay", "bad_delay"},
+		{"invalid float max_mbps str", "global.max_mbps", "not_a_float"},
+		{"negative float max_mbps", "global.max_mbps", "-5.0"},
+		{"invalid port str", "nas.ssh_port", "not_a_port"},
+		{"zero port", "nas.ssh_port", "0"},
+		{"out of range port", "nas.ssh_port", "70000"},
+		{"negative port", "nas.ssh_port", "-22"},
+		{"invalid int prune_days", "retention.prune_days", "bad_int"},
+		{"negative prune_days", "retention.prune_days", "-1"},
+		{"invalid int prune_count", "retention.prune_count", "bad_int"},
+		{"negative prune_count", "retention.prune_count", "-1"},
+		{"invalid bool enabled", "server.creative.enabled", "not_a_bool"},
+		{"invalid bool pause_if_no_players", "server.creative.pause_if_no_players", "not_a_bool"},
+	}
+
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mainBefore, _ := os.ReadFile(cfgPath)
+			autoBefore, _ := os.ReadFile(autoPath)
+
+			err := SetConfigValue(cfgPath, tc.key, tc.val)
+			if err == nil {
+				t.Fatalf("SetConfigValue(%q, %q) expected error, got nil", tc.key, tc.val)
+			}
+
+			mainAfter, _ := os.ReadFile(cfgPath)
+			autoAfter, _ := os.ReadFile(autoPath)
+
+			if !bytes.Equal(mainBefore, mainAfter) {
+				t.Errorf("main config changed on invalid update %s: before=%s after=%s", tc.name, mainBefore, mainAfter)
+			}
+			if !bytes.Equal(autoBefore, autoAfter) {
+				t.Errorf("auto config changed on invalid update %s: before=%s after=%s", tc.name, autoBefore, autoAfter)
+			}
+		})
+	}
+}
+
+func TestApplyEnvOverridesIgnoresInvalidValues(t *testing.T) {
+	cfg := &Config{
+		Global: GlobalConfig{
+			MaxMBps:        40.0,
+			BackupInterval: Duration{24 * time.Hour},
+		},
+		NAS: NASConfig{
+			SSHPort: 22,
+		},
+		Retention: RetentionConfig{
+			PruneDays: 7,
+		},
+		Servers: map[string]ServerConfig{
+			"creative": {Enabled: true},
+		},
+	}
+
+	t.Setenv("MC_BACKUP_GLOBAL_MAX_MBPS", "invalid_float")
+	t.Setenv("MC_BACKUP_GLOBAL_BACKUP_INTERVAL", "invalid_duration")
+	t.Setenv("MC_BACKUP_NAS_SSH_PORT", "99999")
+	t.Setenv("MC_BACKUP_RETENTION_PRUNE_DAYS", "-5")
+	t.Setenv("MC_BACKUP_SERVER_CREATIVE_ENABLED", "not_a_bool")
+
+	applyEnvOverrides(cfg)
+
+	if cfg.Global.MaxMBps != 40.0 {
+		t.Errorf("MaxMBps changed on invalid env override: got %f, want 40.0", cfg.Global.MaxMBps)
+	}
+	if cfg.Global.BackupInterval.Duration != 24*time.Hour {
+		t.Errorf("BackupInterval changed on invalid env override: got %v, want 24h", cfg.Global.BackupInterval.Duration)
+	}
+	if cfg.NAS.SSHPort != 22 {
+		t.Errorf("SSHPort changed on invalid env override: got %d, want 22", cfg.NAS.SSHPort)
+	}
+	if cfg.Retention.PruneDays != 7 {
+		t.Errorf("PruneDays changed on invalid env override: got %d, want 7", cfg.Retention.PruneDays)
+	}
+	if !cfg.Servers["creative"].Enabled {
+		t.Errorf("Enabled changed on invalid env override: got false, want true")
+	}
+}
+
 func TestDurationMarshalUnmarshal(t *testing.T) {
 	d := Duration{Duration: 5 * time.Minute}
 	bytes, err := d.MarshalText()
