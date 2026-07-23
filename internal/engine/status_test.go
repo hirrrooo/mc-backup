@@ -61,7 +61,7 @@ func TestStatusAPIAuth(t *testing.T) {
 	jt := NewJobTracker()
 
 	t.Run("token configured", func(t *testing.T) {
-		handler := newStatusMux(jt, callbacks, "secret-token")
+		handler := newStatusMux(jt, callbacks, func() string { return "secret-token" })
 
 		mutatingRoutes := []struct {
 			path string
@@ -148,7 +148,7 @@ func TestStatusAPIAuth(t *testing.T) {
 	})
 
 	t.Run("token empty (loopback default)", func(t *testing.T) {
-		handler := newStatusMux(jt, callbacks, "")
+		handler := newStatusMux(jt, callbacks, func() string { return "" })
 
 		canceled = false
 		req := httptest.NewRequest(http.MethodPost, "/cancel", nil)
@@ -158,4 +158,99 @@ func TestStatusAPIAuth(t *testing.T) {
 			t.Errorf("/cancel empty token: code=%d, canceled=%v", rec.Code, canceled)
 		}
 	})
+}
+
+func TestStatusAPITokenRotation(t *testing.T) {
+	var currentToken atomicConfig
+	// Initial state: empty token
+	currentToken.Store(&Config{
+		Global: GlobalConfig{
+			APIToken: "",
+		},
+	})
+
+	canceled := false
+	callbacks := StatusCallbacks{
+		OnCancel: func() { canceled = true },
+	}
+
+	jt := NewJobTracker()
+	handler := newStatusMux(jt, callbacks, func() string {
+		if cfg := currentToken.Load(); cfg != nil {
+			return cfg.Global.APIToken
+		}
+		return ""
+	})
+
+	// 1. Initial empty token permits local POST without Authorization header
+	canceled = false
+	req := httptest.NewRequest(http.MethodPost, "/cancel", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !canceled {
+		t.Fatalf("step 1 empty token: got code %d, canceled=%v, want 200 OK", rec.Code, canceled)
+	}
+
+	// 2. Rotate token to secret-v1
+	currentToken.Store(&Config{
+		Global: GlobalConfig{
+			APIToken: "secret-v1",
+		},
+	})
+
+	// Missing header -> 401
+	canceled = false
+	req = httptest.NewRequest(http.MethodPost, "/cancel", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("step 2 missing token: got code %d, want 401", rec.Code)
+	}
+
+	// Wrong token -> 401
+	canceled = false
+	req = httptest.NewRequest(http.MethodPost, "/cancel", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("step 2 wrong token: got code %d, want 401", rec.Code)
+	}
+
+	// Valid secret-v1 -> 200
+	canceled = false
+	req = httptest.NewRequest(http.MethodPost, "/cancel", nil)
+	req.Header.Set("Authorization", "Bearer secret-v1")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !canceled {
+		t.Fatalf("step 2 valid secret-v1: got code %d, canceled=%v, want 200", rec.Code, canceled)
+	}
+
+	// 3. Rotate token to secret-v2 without server restart
+	currentToken.Store(&Config{
+		Global: GlobalConfig{
+			APIToken: "secret-v2",
+		},
+	})
+
+	// Old token secret-v1 -> 401
+	canceled = false
+	req = httptest.NewRequest(http.MethodPost, "/cancel", nil)
+	req.Header.Set("Authorization", "Bearer secret-v1")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("step 3 old token secret-v1: got code %d, want 401", rec.Code)
+	}
+
+	// New token secret-v2 -> 200
+	canceled = false
+	req = httptest.NewRequest(http.MethodPost, "/cancel", nil)
+	req.Header.Set("Authorization", "Bearer secret-v2")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !canceled {
+		t.Fatalf("step 3 new token secret-v2: got code %d, canceled=%v, want 200", rec.Code, canceled)
+	}
 }

@@ -59,7 +59,11 @@ type StatusCallbacks struct {
 	OnBackup func(server string, offline bool)
 }
 
-func checkBearerToken(r *http.Request, token string) bool {
+func checkBearerToken(r *http.Request, tokenSupplier func() string) bool {
+	var token string
+	if tokenSupplier != nil {
+		token = tokenSupplier()
+	}
 	if token == "" {
 		return true
 	}
@@ -72,7 +76,7 @@ func checkBearerToken(r *http.Request, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
 }
 
-func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, token string) http.Handler {
+func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, tokenSupplier func() string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -87,7 +91,7 @@ func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, token string) http.
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if !checkBearerToken(r, token) {
+		if !checkBearerToken(r, tokenSupplier) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -100,7 +104,7 @@ func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, token string) http.
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if !checkBearerToken(r, token) {
+		if !checkBearerToken(r, tokenSupplier) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -113,7 +117,7 @@ func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, token string) http.
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if !checkBearerToken(r, token) {
+		if !checkBearerToken(r, tokenSupplier) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -126,8 +130,8 @@ func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, token string) http.
 	return mux
 }
 
-func startStatusServer(addr, token string, jt *JobTracker, callbacks StatusCallbacks) {
-	handler := newStatusMux(jt, callbacks, token)
+func startStatusServer(addr string, tokenSupplier func() string, jt *JobTracker, callbacks StatusCallbacks) {
+	handler := newStatusMux(jt, callbacks, tokenSupplier)
 	go func() {
 		slog.Info("status API listening", "addr", addr)
 		if err := http.ListenAndServe(addr, handler); err != nil {

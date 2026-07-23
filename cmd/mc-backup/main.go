@@ -201,10 +201,10 @@ func backupCmd() {
 	}
 	defer resp.Body.Close()
 
-	var buf [64]byte
-	n, _ := resp.Body.Read(buf[:])
 	switch {
 	case resp.StatusCode == http.StatusOK:
+		var buf [64]byte
+		n, _ := resp.Body.Read(buf[:])
 		fmt.Printf("backup: %s\n", buf[:n])
 	case resp.StatusCode == http.StatusUnauthorized:
 		fmt.Fprintf(os.Stderr, "backup: unauthorized (check global.api_token)\n")
