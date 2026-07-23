@@ -146,15 +146,18 @@ func (c *Config) Validate() error {
 
 	hasNASTarget := false
 	hasLocalTarget := false
-	for _, s := range c.Servers {
+	for name, s := range c.Servers {
 		if !s.Enabled {
 			continue
 		}
 		t := normalizeTarget(s.Target)
-		if t == "" || t == "nas" {
+		switch t {
+		case "", "nas":
 			hasNASTarget = true
-		} else if t == "local" {
+		case "local":
 			hasLocalTarget = true
+		default:
+			return fmt.Errorf("invalid config: server %q has invalid target %q (must be \"nas\" or \"local\")", name, s.Target)
 		}
 	}
 

@@ -860,6 +860,118 @@ func TestValidateActiveTargetsOnly(t *testing.T) {
 	}
 }
 
+func TestValidateServerTarget(t *testing.T) {
+	validNAS := NASConfig{
+		SSHUser:  "backup",
+		SSHHost:  "nas.local",
+		DestRoot: "/volume1/backups",
+	}
+	validLocal := LocalConfig{DestRoot: "/tmp"}
+
+	tests := []struct {
+		name        string
+		serverName  string
+		server      ServerConfig
+		nas         NASConfig
+		local       LocalConfig
+		wantErr     bool
+		errContains []string
+	}{
+		{
+			name:       "valid nas target uppercase with spaces",
+			serverName: "srv1",
+			server:     ServerConfig{Enabled: true, Target: " NAS "},
+			nas:        validNAS,
+			wantErr:    false,
+		},
+		{
+			name:       "valid local target lowercase",
+			serverName: "srv1",
+			server:     ServerConfig{Enabled: true, Target: "local"},
+			local:      validLocal,
+			wantErr:    false,
+		},
+		{
+			name:       "valid empty target defaults to nas",
+			serverName: "srv1",
+			server:     ServerConfig{Enabled: true, Target: ""},
+			nas:        validNAS,
+			wantErr:    false,
+		},
+		{
+			name:        "invalid target s3 on enabled server",
+			serverName:  "srv1",
+			server:      ServerConfig{Enabled: true, Target: "s3"},
+			nas:         validNAS,
+			wantErr:     true,
+			errContains: []string{"srv1", "s3", "nas", "local"},
+		},
+		{
+			name:        "invalid target preserving raw input whitespace and casing",
+			serverName:  "srv_creative",
+			server:      ServerConfig{Enabled: true, Target: " InvalidTarget "},
+			nas:         validNAS,
+			wantErr:     true,
+			errContains: []string{"srv_creative", " InvalidTarget ", "nas", "local"},
+		},
+		{
+			name:       "disabled server with invalid target is ignored",
+			serverName: "srv_disabled",
+			server:     ServerConfig{Enabled: false, Target: " invalid_target "},
+			wantErr:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Global:  GlobalConfig{ListenAddr: "127.0.0.1:47990"},
+				NAS:     tt.nas,
+				Local:   tt.local,
+				Servers: map[string]ServerConfig{tt.serverName: tt.server},
+			}
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil {
+				for _, sub := range tt.errContains {
+					if !strings.Contains(err.Error(), sub) {
+						t.Errorf("error %q should contain %q", err.Error(), sub)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestLoadConfigInvalidTargetIntegration(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+
+[server.creative]
+enabled = true
+target = " Invalid "
+`)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("LoadConfig should fail for invalid server target")
+	}
+	for _, sub := range []string{"creative", " Invalid ", "nas", "local"} {
+		if !strings.Contains(err.Error(), sub) {
+			t.Errorf("LoadConfig error %q should contain %q", err.Error(), sub)
+		}
+	}
+}
+
 func TestResolveBackupTargetAndValidationNormalization(t *testing.T) {
 	// Whitespace and case normalization in resolveBackupTarget
 	got, err := resolveBackupTarget("creative", ServerConfig{Target: " NAS "}, LocalConfig{})
