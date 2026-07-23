@@ -39,10 +39,14 @@ Keep `rcon-cli`'s existing `RCON_PASSWORD` environment variable, but never put
 the password value in an argument. Extend the command abstraction with an
 environment-setting operation backed by `exec.Cmd.Env`; construct RCON argv as
 `docker exec -e RCON_PASSWORD <container> rcon-cli <command>` and set
-`RCON_PASSWORD=<secret>` on the child command. Preserve the existing
-`commandRunner` seam and add assertions that both argv and debug output omit
-the secret. Do not use stdin because that changes the `rcon-cli` contract and
-is less compatible with the current invocation.
+`RCON_PASSWORD=<secret>` on the child command. The concrete `exec.Cmd`
+implementation must append injected variables to `os.Environ()` (e.g.
+`cmd.Env = append(os.Environ(), env...)`), not replace `cmd.Env` with only
+`RCON_PASSWORD`, so that `PATH` and other inherited environment values remain
+available. Preserve the existing `commandRunner` seam and add assertions that
+both argv and debug output omit the secret. Do not use stdin because that
+changes the `rcon-cli` contract and is less compatible with the current
+invocation.
 
 ### Status API defense in depth
 
@@ -67,12 +71,15 @@ explicitly configured remote listener safe by default.
 
 Add `global.excludes []string` as the single default policy, initialized to the
 current `*.jar`, `cache`, `logs`, and `*.tmp` list when omitted. Add optional
-`server.<name>.excludes []string`; when present, it replaces the global list
-for that server, and an explicitly empty list disables excludes. Thread the
-selected list through both local and NAS argument builders. Preserve ordering
-and one `--exclude=` argument per entry. Include the fields in TOML encoding,
-environment override handling, auto-server serialization, example config, and
-reference documentation.
+`server.<name>.excludes []string`. Explicitly specify Go/TOML presence
+semantics: an omitted server `excludes` is `nil` and falls back to global
+excludes, while an explicit `excludes = []` is non-nil empty and deliberately
+disables all excludes for that server. Resolution logic must use
+`server.Excludes == nil` to choose fallback, not `len(server.Excludes) == 0`.
+Thread the selected list through both local and NAS argument builders. Preserve
+ordering and one `--exclude=` argument per entry. Include the fields in TOML
+encoding, environment override handling, auto-server serialization, example
+config, and reference documentation.
 
 ## Ordered phase boundaries
 
@@ -132,7 +139,10 @@ no callback on rejection, and non-loopback-without-token startup validation.
 
 Re-check evaluation items 3.1–3.5 and implement all applicable fixes:
 
-1. Add global/per-server exclude selection and argument-builder tests.
+1. Add global/per-server exclude selection and argument-builder tests. Test
+   requirements must explicitly cover both `nil` (fallback to global excludes) and
+   non-nil empty `[]` (deliberately disabling all excludes) server `excludes`
+   values.
 2. Add `-r`/`--no-run-if-empty` to NAS count pruning and test the exact remote
    command contract.
 3. Run `sync` with the cycle context, check its error, and log a warning with
