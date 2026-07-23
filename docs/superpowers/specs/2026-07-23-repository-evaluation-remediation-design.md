@@ -1,7 +1,7 @@
 # Repository Evaluation Remediation Design
 
-**Date:** 2026-07-23  
-**Source:** `docs/repo-evaluation-2026-07-23.md` (evaluated commit `87b9dc6`)  
+**Date:** 2026-07-23
+**Source:** `docs/repo-evaluation-2026-07-23.md` (evaluated commit `87b9dc6`)
 **Status:** Approved design for a later implementation plan
 
 ## Purpose and scope
