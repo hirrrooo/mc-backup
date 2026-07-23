@@ -20,9 +20,12 @@ type lastBackup struct {
 }
 
 type Daemon struct {
-	cfgPath      string
-	ac           atomicConfig
-	jobTracker   *JobTracker
+	cfgPath    string
+	ac         atomicConfig
+	jobTracker *JobTracker
+	// lastBackups stores the last recorded snapshot paths per server (namespace/serverName -> *lastBackup).
+	// Startup population happens sequentially before backup cycles start; all subsequent runtime
+	// reads and writes are serialized by cycleMu.
 	lastBackups  map[string]*lastBackup
 	autoServers  map[string]bool
 	autoMu       sync.Mutex
