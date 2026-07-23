@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1517,13 +1518,83 @@ pause_if_no_players = false
 	}
 }
 
-func TestSetConfigValueErrors(t *testing.T) {
+func TestSetConfigValueValidation(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[global]\nlisten_addr=\"127.0.0.1:47990\"\n"), 0600); err != nil {
-		t.Fatal(err)
+	autoPath := autoServersPath(cfgPath)
+
+	mainContent := []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n\n[local]\ndest_root = \"/tmp\"\n")
+	autoContent := []byte("[server.creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\n")
+
+	if err := os.WriteFile(cfgPath, mainContent, 0600); err != nil {
+		t.Fatalf("write main config: %v", err)
+	}
+	if err := os.WriteFile(autoPath, autoContent, 0600); err != nil {
+		t.Fatalf("write auto config: %v", err)
 	}
 
+	mainBefore, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read main before: %v", err)
+	}
+	autoBefore, err := os.ReadFile(autoPath)
+	if err != nil {
+		t.Fatalf("read auto before: %v", err)
+	}
+
+	// 1. Attempt non-loopback listen address without token -> expect error and no file changes
+	err = SetConfigValue(cfgPath, "global.listen_addr", "0.0.0.0:47990")
+	if err == nil {
+		t.Fatal("SetConfigValue should fail for non-loopback listen_addr without api_token")
+	}
+
+	mainAfter1, _ := os.ReadFile(cfgPath)
+	autoAfter1, _ := os.ReadFile(autoPath)
+	if !bytes.Equal(mainBefore, mainAfter1) {
+		t.Errorf("main config file changed after invalid listen_addr update:\nBefore: %s\nAfter: %s", mainBefore, mainAfter1)
+	}
+	if !bytes.Equal(autoBefore, autoAfter1) {
+		t.Errorf("auto config file changed after invalid listen_addr update:\nBefore: %s\nAfter: %s", autoBefore, autoAfter1)
+	}
+	if _, err := LoadConfig(cfgPath); err != nil {
+		t.Fatalf("LoadConfig failed after rejected update: %v", err)
+	}
+
+	// 2. Attempt invalid server target -> expect error and no file changes
+	err = SetConfigValue(cfgPath, "server.creative.target", "s3")
+	if err == nil {
+		t.Fatal("SetConfigValue should fail for invalid server target")
+	}
+
+	mainAfter2, _ := os.ReadFile(cfgPath)
+	autoAfter2, _ := os.ReadFile(autoPath)
+	if !bytes.Equal(mainBefore, mainAfter2) {
+		t.Errorf("main config file changed after invalid target update:\nBefore: %s\nAfter: %s", mainBefore, mainAfter2)
+	}
+	if !bytes.Equal(autoBefore, autoAfter2) {
+		t.Errorf("auto config file changed after invalid target update:\nBefore: %s\nAfter: %s", autoBefore, autoAfter2)
+	}
+	if _, err := LoadConfig(cfgPath); err != nil {
+		t.Fatalf("LoadConfig failed after rejected update: %v", err)
+	}
+
+	// 3. Valid update ordering: set api_token first, then set non-loopback listen_addr -> should succeed
+	if err := SetConfigValue(cfgPath, "global.api_token", "secret123"); err != nil {
+		t.Fatalf("SetConfigValue api_token: %v", err)
+	}
+	if err := SetConfigValue(cfgPath, "global.listen_addr", "0.0.0.0:47990"); err != nil {
+		t.Fatalf("SetConfigValue listen_addr with token: %v", err)
+	}
+
+	reloaded, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig after valid updates: %v", err)
+	}
+	if reloaded.Global.ListenAddr != "0.0.0.0:47990" || reloaded.Global.APIToken != "secret123" {
+		t.Errorf("reloaded config mismatch: listen_addr=%q api_token=%q", reloaded.Global.ListenAddr, reloaded.Global.APIToken)
+	}
+
+	// 4. Invalid key / unknown section error handling
 	if err := SetConfigValue(cfgPath, "singlekey", "val"); err == nil {
 		t.Error("expected error for single key, got nil")
 	}

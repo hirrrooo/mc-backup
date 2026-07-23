@@ -685,6 +685,9 @@ func SetConfigValue(path, key, val string) error {
 	default:
 		return fmt.Errorf("unknown section: %s", section)
 	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid config update: %w", err)
+	}
 	return saveSplit(path, cfg)
 }
 
