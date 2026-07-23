@@ -4,6 +4,7 @@ listen_addr = "127.0.0.1:47990"  # Bound to loopback by default. Non-loopback re
 backup_interval = "1h"
 initial_delay = "2m"
 max_mbps = 40.0
+# excludes = ["*.jar", "cache", "logs", "*.tmp"] # Global rsync exclude patterns (defaults to *.jar, cache, logs, *.tmp if omitted)
 
 [local]
 dest_root = "/var/lib/mc-backup"
@@ -28,3 +29,4 @@ namespace = "minecraft"
 # [server.example]
 # target = "nas"                 # or "local"
 # pause_if_no_players = true   # skip backups when no one is online
+# excludes = ["*.jar"]           # per-server excludes (overrides global; set excludes = [] to disable all excludes)

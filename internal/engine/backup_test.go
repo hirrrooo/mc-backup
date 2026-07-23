@@ -233,6 +233,51 @@ func TestIsBackupDirRequiresTimestampFormat(t *testing.T) {
 	}
 }
 
+func TestBackupServerUsesResolvedExcludes(t *testing.T) {
+	localRoot := t.TempDir()
+	source := t.TempDir()
+	runner := &recordingRunner{}
+	var rsyncArgs []string
+	previousRsyncRunner := rsyncRunner
+	rsyncRunner = func(_ context.Context, args []string, _ func(int64, int64)) error {
+		rsyncArgs = append([]string(nil), args...)
+		return nil
+	}
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	serverExcludes := []string{"custom.dat"}
+	cfg := Config{
+		Global: GlobalConfig{
+			Excludes: &[]string{"global.tmp"},
+		},
+		Local: LocalConfig{DestRoot: localRoot},
+	}
+
+	withCommandRunner(runner, func() {
+		NewBackupEngine(cfg).BackupServer(
+			context.Background(), WatchConfig{Namespace: "mc"}, "creative",
+			ServerConfig{Target: "local", DataDir: source, Excludes: &serverExcludes}, "", "", true,
+		)
+	})
+
+	hasCustomExclude := false
+	hasGlobalExclude := false
+	for _, arg := range rsyncArgs {
+		if arg == "--exclude=custom.dat" {
+			hasCustomExclude = true
+		}
+		if arg == "--exclude=global.tmp" {
+			hasGlobalExclude = true
+		}
+	}
+	if !hasCustomExclude {
+		t.Errorf("rsync args missing server custom exclude '--exclude=custom.dat': %v", rsyncArgs)
+	}
+	if hasGlobalExclude {
+		t.Errorf("rsync args unexpectedly contained overridden global exclude '--exclude=global.tmp': %v", rsyncArgs)
+	}
+}
+
 func TestStreamRsyncProgressHandlesCarriageReturns(t *testing.T) {
 	input := bytes.NewBufferString("1,000 10% 1.00MB/s\r2,000 20% 1.00MB/s\nnot progress\r3,000 50% 1.00MB/s")
 	var got []struct {

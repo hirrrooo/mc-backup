@@ -28,11 +28,12 @@ func (d Duration) MarshalText() ([]byte, error) {
 }
 
 type GlobalConfig struct {
-	ListenAddr     string   `toml:"listen_addr"`
-	BackupInterval Duration `toml:"backup_interval"`
-	InitialDelay   Duration `toml:"initial_delay"`
-	MaxMBps        float64  `toml:"max_mbps"`
-	APIToken       string   `toml:"api_token"`
+	ListenAddr     string    `toml:"listen_addr"`
+	BackupInterval Duration  `toml:"backup_interval"`
+	InitialDelay   Duration  `toml:"initial_delay"`
+	MaxMBps        float64   `toml:"max_mbps"`
+	APIToken       string    `toml:"api_token"`
+	Excludes       *[]string `toml:"excludes"`
 }
 
 type NASConfig struct {
@@ -62,12 +63,13 @@ func (w WatchConfig) backupDir(serverName string) string {
 }
 
 type ServerConfig struct {
-	Enabled          bool   `toml:"enabled"`
-	Target           string `toml:"target"`
-	ContainerName    string `toml:"container_name"`
-	RconPassword     string `toml:"rcon_password"`
-	DataDir          string `toml:"data_dir"`
-	PauseIfNoPlayers bool   `toml:"pause_if_no_players"`
+	Enabled          bool      `toml:"enabled"`
+	Target           string    `toml:"target"`
+	ContainerName    string    `toml:"container_name"`
+	RconPassword     string    `toml:"rcon_password"`
+	DataDir          string    `toml:"data_dir"`
+	PauseIfNoPlayers bool      `toml:"pause_if_no_players"`
+	Excludes         *[]string `toml:"excludes"`
 }
 
 type Config struct {
@@ -77,6 +79,48 @@ type Config struct {
 	Retention RetentionConfig         `toml:"retention"`
 	Watch     []WatchConfig           `toml:"watch"`
 	Servers   map[string]ServerConfig `toml:"server"`
+}
+
+func DefaultExcludes() []string {
+	return []string{"*.jar", "cache", "logs", "*.tmp"}
+}
+
+func (c *Config) ResolveGlobalExcludes() []string {
+	if c.Global.Excludes != nil {
+		res := make([]string, len(*c.Global.Excludes))
+		copy(res, *c.Global.Excludes)
+		return res
+	}
+	return DefaultExcludes()
+}
+
+func (c *Config) ResolveServerExcludes(server ServerConfig) []string {
+	if server.Excludes != nil {
+		res := make([]string, len(*server.Excludes))
+		copy(res, *server.Excludes)
+		return res
+	}
+	return c.ResolveGlobalExcludes()
+}
+
+func parseExcludesValue(val string) *[]string {
+	trimmed := strings.TrimSpace(val)
+	if strings.EqualFold(trimmed, "inherit") || strings.EqualFold(trimmed, "default") {
+		return nil
+	}
+	if trimmed == "" || strings.EqualFold(trimmed, "none") {
+		res := []string{}
+		return &res
+	}
+	parts := strings.Split(val, ",")
+	res := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			res = append(res, p)
+		}
+	}
+	return &res
 }
 
 func (c *Config) Validate() error {
@@ -243,8 +287,19 @@ func cloneConfig(src *Config) *Config {
 		Watch:     src.Watch,
 		Servers:   make(map[string]ServerConfig, len(src.Servers)),
 	}
+	if src.Global.Excludes != nil {
+		ex := make([]string, len(*src.Global.Excludes))
+		copy(ex, *src.Global.Excludes)
+		dst.Global.Excludes = &ex
+	}
 	for k, v := range src.Servers {
-		dst.Servers[k] = v
+		sc := v
+		if v.Excludes != nil {
+			ex := make([]string, len(*v.Excludes))
+			copy(ex, *v.Excludes)
+			sc.Excludes = &ex
+		}
+		dst.Servers[k] = sc
 	}
 	return dst
 }
@@ -288,6 +343,9 @@ func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 		fmt.Fprintf(f, "# defaults to <watch.path>/<server>/mc-data if empty\n")
 		fmt.Fprintf(f, "data_dir = %q\n", s.DataDir)
 		fmt.Fprintf(f, "pause_if_no_players = %v\n", s.PauseIfNoPlayers)
+		if s.Excludes != nil {
+			fmt.Fprintf(f, "excludes = %s\n", formatTOMLStringSlice(*s.Excludes))
+		}
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
@@ -300,6 +358,14 @@ func SaveAutoServers(cfgPath string, servers map[string]ServerConfig) error {
 		return fmt.Errorf("replace %s: %w", autoPath, err)
 	}
 	return nil
+}
+
+func formatTOMLStringSlice(items []string) string {
+	elems := make([]string, len(items))
+	for i, item := range items {
+		elems[i] = fmt.Sprintf("%q", item)
+	}
+	return "[" + strings.Join(elems, ", ") + "]"
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -367,6 +433,8 @@ func setGlobalField(v *GlobalConfig, key, val string) {
 		if err == nil {
 			v.InitialDelay = Duration{d}
 		}
+	case "excludes":
+		v.Excludes = parseExcludesValue(val)
 	}
 }
 
@@ -414,6 +482,8 @@ func setServerField(s *ServerConfig, key, val string) {
 		s.DataDir = val
 	case "pause_if_no_players":
 		s.PauseIfNoPlayers = strings.ToLower(val) == "true"
+	case "excludes":
+		s.Excludes = parseExcludesValue(val)
 	}
 }
 
@@ -424,6 +494,7 @@ var serverFieldKeys = []string{
 	"rcon_password",
 	"data_dir",
 	"pause_if_no_players",
+	"excludes",
 }
 
 // parseServerEnvKey splits the lowercased remainder of a
@@ -592,6 +663,14 @@ func getGlobalField(g GlobalConfig, key string) string {
 		return g.BackupInterval.Duration.String()
 	case "initial_delay":
 		return g.InitialDelay.Duration.String()
+	case "excludes":
+		if g.Excludes == nil {
+			return "default"
+		}
+		if len(*g.Excludes) == 0 {
+			return "none"
+		}
+		return strings.Join(*g.Excludes, ",")
 	}
 	return ""
 }
@@ -636,6 +715,14 @@ func getServerFieldStr(s ServerConfig, key string) string {
 		return s.DataDir
 	case "pause_if_no_players":
 		return fmt.Sprintf("%t", s.PauseIfNoPlayers)
+	case "excludes":
+		if s.Excludes == nil {
+			return "inherit"
+		}
+		if len(*s.Excludes) == 0 {
+			return "none"
+		}
+		return strings.Join(*s.Excludes, ",")
 	}
 	return ""
 }

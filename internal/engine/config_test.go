@@ -636,3 +636,251 @@ listen_addr = "0.0.0.0:47990"
 		t.Errorf("LoadConfig error %q should contain 'invalid config:'", err.Error())
 	}
 }
+
+func TestExcludesResolution(t *testing.T) {
+	// 1. Omitted global and server -> default excludes
+	cfgDefault := &Config{}
+	resDefault := cfgDefault.ResolveServerExcludes(ServerConfig{})
+	wantDefault := []string{"*.jar", "cache", "logs", "*.tmp"}
+	if strings.Join(resDefault, ",") != strings.Join(wantDefault, ",") {
+		t.Errorf("default server excludes = %v, want %v", resDefault, wantDefault)
+	}
+
+	// 2. Global excludes configured, server omitted -> global excludes
+	globalList := []string{"*.bak", "temp"}
+	cfgGlobal := &Config{
+		Global: GlobalConfig{Excludes: &globalList},
+	}
+	resGlobal := cfgGlobal.ResolveServerExcludes(ServerConfig{})
+	if strings.Join(resGlobal, ",") != "%.bak,temp" && strings.Join(resGlobal, ",") != "*.bak,temp" {
+		t.Errorf("server inheriting global excludes = %v, want %v", resGlobal, globalList)
+	}
+
+	// 3. Server explicitly configured with list -> server excludes
+	serverList := []string{"*.iso"}
+	resServer := cfgGlobal.ResolveServerExcludes(ServerConfig{Excludes: &serverList})
+	if strings.Join(resServer, ",") != "*.iso" {
+		t.Errorf("server explicit excludes = %v, want [*.iso]", resServer)
+	}
+
+	// 4. Explicit empty server excludes -> empty slice (no excludes)
+	emptyList := []string{}
+	resExplicitEmpty := cfgGlobal.ResolveServerExcludes(ServerConfig{Excludes: &emptyList})
+	if resExplicitEmpty == nil || len(resExplicitEmpty) != 0 {
+		t.Errorf("explicit empty server excludes = %v (len %d), want empty slice (len 0)", resExplicitEmpty, len(resExplicitEmpty))
+	}
+
+	// 5. Explicit empty global excludes with omitted server -> empty slice
+	cfgGlobalEmpty := &Config{
+		Global: GlobalConfig{Excludes: &emptyList},
+	}
+	resGlobalEmpty := cfgGlobalEmpty.ResolveServerExcludes(ServerConfig{})
+	if resGlobalEmpty == nil || len(resGlobalEmpty) != 0 {
+		t.Errorf("explicit empty global excludes = %v (len %d), want empty slice (len 0)", resGlobalEmpty, len(resGlobalEmpty))
+	}
+}
+
+func TestExcludesTOMLRoundTripAndNilPreservation(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+excludes = ["*.tmp", "cache"]
+
+[server.creative]
+enabled = true
+excludes = []
+
+[server.survival]
+enabled = true
+`)
+	if err := os.WriteFile(cfgPath, content, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.Global.Excludes == nil || strings.Join(*cfg.Global.Excludes, ",") != "*.tmp,cache" {
+		t.Errorf("global excludes = %v, want [*.tmp, cache]", cfg.Global.Excludes)
+	}
+
+	sCreative, ok := cfg.Servers["creative"]
+	if !ok || sCreative.Excludes == nil {
+		t.Fatalf("creative server excludes should be non-nil pointer, got %#v", sCreative)
+	}
+	if len(*sCreative.Excludes) != 0 {
+		t.Errorf("creative server excludes len = %d, want 0", len(*sCreative.Excludes))
+	}
+
+	sSurvival, ok := cfg.Servers["survival"]
+	if !ok {
+		t.Fatal("survival server missing")
+	}
+	if sSurvival.Excludes != nil {
+		t.Errorf("survival server excludes = %v, want nil", sSurvival.Excludes)
+	}
+
+	// Save auto servers and test auto file round-trip
+	autoServers := map[string]ServerConfig{
+		"creative": sCreative,
+		"survival": sSurvival,
+	}
+	if err := SaveAutoServers(cfgPath, autoServers); err != nil {
+		t.Fatalf("SaveAutoServers: %v", err)
+	}
+
+	reloaded, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig reloaded: %v", err)
+	}
+
+	sCreativeReloaded := reloaded.Servers["creative"]
+	if sCreativeReloaded.Excludes == nil || len(*sCreativeReloaded.Excludes) != 0 {
+		t.Errorf("reloaded creative excludes = %v, want non-nil empty", sCreativeReloaded.Excludes)
+	}
+
+	sSurvivalReloaded := reloaded.Servers["survival"]
+	if sSurvivalReloaded.Excludes != nil {
+		t.Errorf("reloaded survival excludes = %v, want nil", sSurvivalReloaded.Excludes)
+	}
+}
+
+func TestExcludesEscapingInSaveAutoServers(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n"), 0644)
+
+	ex := []string{"*.jar", "file with \"quotes\" and \\backslash", "logs,cache"}
+	servers := map[string]ServerConfig{
+		"creative": {
+			Enabled:  true,
+			Excludes: &ex,
+		},
+	}
+
+	if err := SaveAutoServers(cfgPath, servers); err != nil {
+		t.Fatalf("SaveAutoServers: %v", err)
+	}
+
+	reloaded, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	got := reloaded.Servers["creative"].Excludes
+	if got == nil {
+		t.Fatal("reloaded excludes is nil")
+	}
+	if len(*got) != 3 || (*got)[0] != "*.jar" || (*got)[1] != "file with \"quotes\" and \\backslash" || (*got)[2] != "logs,cache" {
+		t.Errorf("escaped excludes round trip failed, got %#v", *got)
+	}
+}
+
+func TestExcludesEnvOverrides(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+
+[server.creative]
+enabled = true
+
+[server.survival]
+enabled = true
+excludes = ["*.tmp"]
+`)
+	os.WriteFile(cfgPath, content, 0644)
+
+	t.Setenv("MC_BACKUP_GLOBAL_EXCLUDES", "*.jar, cache")
+	t.Setenv("MC_BACKUP_SERVER_CREATIVE_EXCLUDES", "none")
+	t.Setenv("MC_BACKUP_SERVER_SURVIVAL_EXCLUDES", "inherit")
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.Global.Excludes == nil || strings.Join(*cfg.Global.Excludes, ",") != "*.jar,cache" {
+		t.Errorf("global excludes env override = %v, want [*.jar, cache]", cfg.Global.Excludes)
+	}
+
+	sCreative := cfg.Servers["creative"]
+	if sCreative.Excludes == nil || len(*sCreative.Excludes) != 0 {
+		t.Errorf("creative excludes env override 'none' = %v, want non-nil empty", sCreative.Excludes)
+	}
+
+	sSurvival := cfg.Servers["survival"]
+	if sSurvival.Excludes != nil {
+		t.Errorf("survival excludes env override 'inherit' = %v, want nil", sSurvival.Excludes)
+	}
+}
+
+func TestExcludesGetSetConfig(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+
+[server.creative]
+enabled = true
+`)
+	os.WriteFile(cfgPath, content, 0644)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if got := GetConfigValue(cfg, "global.excludes"); got != "default" {
+		t.Errorf("GetConfigValue global.excludes = %q, want %q", got, "default")
+	}
+	if got := GetConfigValue(cfg, "server.creative.excludes"); got != "inherit" {
+		t.Errorf("GetConfigValue server.creative.excludes = %q, want %q", got, "inherit")
+	}
+	if got := GetConfigValue(cfg, "server.nonexistent.excludes"); got != "" {
+		t.Errorf("GetConfigValue absent server = %q, want empty", got)
+	}
+
+	// Set global excludes to list
+	if err := SetConfigValue(cfgPath, "global.excludes", "*.jar, cache"); err != nil {
+		t.Fatalf("SetConfigValue global.excludes: %v", err)
+	}
+
+	// Set creative excludes to none
+	if err := SetConfigValue(cfgPath, "server.creative.excludes", "none"); err != nil {
+		t.Fatalf("SetConfigValue server.creative.excludes: %v", err)
+	}
+
+	reloaded, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig reloaded: %v", err)
+	}
+
+	if got := GetConfigValue(reloaded, "global.excludes"); got != "*.jar,cache" {
+		t.Errorf("GetConfigValue after set = %q, want %q", got, "*.jar,cache")
+	}
+	if got := GetConfigValue(reloaded, "server.creative.excludes"); got != "none" {
+		t.Errorf("GetConfigValue creative after set = %q, want %q", got, "none")
+	}
+
+	// Reset creative excludes to inherit
+	if err := SetConfigValue(cfgPath, "server.creative.excludes", "inherit"); err != nil {
+		t.Fatalf("SetConfigValue inherit: %v", err)
+	}
+
+	reloaded2, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig reloaded2: %v", err)
+	}
+
+	if got := GetConfigValue(reloaded2, "server.creative.excludes"); got != "inherit" {
+		t.Errorf("GetConfigValue creative after inherit = %q, want %q", got, "inherit")
+	}
+}

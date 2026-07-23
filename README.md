@@ -123,6 +123,7 @@ api_token = ""                 # bearer token for status API mutations (optional
 backup_interval = "1h"
 initial_delay = "2m"
 max_mbps = 40.0             # rate limit for NAS rsync
+excludes = ["*.jar", "cache", "logs", "*.tmp"] # global rsync excludes (defaults to *.jar, cache, logs, *.tmp if omitted)
 
 [local]
 dest_root = "/var/lib/mc-backup"
@@ -161,10 +162,21 @@ target = "nas"                         # or "local"
 container_name = "survival-mc-1"
 rcon_password = "hunter2"
 pause_if_no_players = true
+excludes = ["*.jar"]                   # per-server excludes (overrides global; set excludes = [] or "none" to disable all excludes)
 ```
 
 `target = "local"` uses the local layout and does not contact the NAS.
 `target = "nas"` uses the NAS layout and its SSH/sentinel requirements.
+
+### Rsync Excludes
+
+Rsync exclude patterns can be configured globally in `[global]` as `excludes` or per-server in `[server.<name>]` as `excludes`.
+
+- **Default policy**: When `global.excludes` is omitted, `*.jar`, `cache`, `logs`, and `*.tmp` are excluded by default.
+- **Inheritance & Precedence**: If a server omits `excludes`, it inherits the resolved global excludes (or default excludes). If a server defines `excludes`, its list completely overrides global settings.
+- **Explicit empty (disabling excludes)**: To include all files and disable excludes for a specific server, set `excludes = []` in TOML, or `mc-backup config set server.<name>.excludes none`.
+- **CLI Management**: Set comma-separated values with `mc-backup config set server.<name>.excludes "*.jar,cache"`, use `"none"` or `""` for explicit empty, and `"inherit"` or `"default"` to reset to inherited configuration.
+
 
 ## CLI Usage
 
@@ -264,6 +276,8 @@ separated keys:
 MC_BACKUP_LOCAL_DEST_ROOT=/srv/mc-backups
 MC_BACKUP_NAS_SSH_HOST=nas2.local
 MC_BACKUP_SERVER_SURVIVAL_TARGET=local
+MC_BACKUP_GLOBAL_EXCLUDES="*.jar,cache,logs,*.tmp"
+MC_BACKUP_SERVER_SURVIVAL_EXCLUDES="none"
 ```
 
 Server names are case-insensitive.

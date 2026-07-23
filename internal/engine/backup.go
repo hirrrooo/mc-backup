@@ -167,7 +167,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 	if dataDir == "" {
 		dataDir = filepath.Join(watch.Path, serverName, "mc-data")
 	}
-	excludes := []string{"*.jar", "cache", "logs", "*.tmp"}
+	excludes := be.cfg.ResolveServerExcludes(server)
 
 	container := server.ContainerName
 	if container == "" {
