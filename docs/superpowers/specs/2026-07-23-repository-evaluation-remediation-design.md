@@ -95,12 +95,15 @@ Verify tracked-file absence, ignore behavior, version consistency,
 
 ### Phase 1 — CI safety net
 
-Add a separate `.github/workflows/ci.yml` on pull requests and pushes to all
-branches. It must run formatting failure detection (`test -z "$(gofmt -l
-internal cmd)"`), `go vet ./...`, and `go test -race -cover ./...`. Keep
-`release.yml` publishing-only: its existing release build and rolling-tag
-permissions remain unchanged, and remove its duplicate test step so release
-publishing depends on the required CI check rather than duplicating tests.
+Add a separate `.github/workflows/ci.yml` for pull requests and pushes to
+non-main branches. It must run formatting failure detection (`test -z
+"$(gofmt -l internal cmd)"`), `go vet ./...`, and `go test -race -cover
+./...`. Keep the test and release-build verification in `release.yml`; its
+existing release build and rolling-tag permissions remain unchanged. Release
+publishing remains gated by the successful verification in `release.yml`
+itself, since the separately triggered CI workflow can run concurrently. Do
+not make release publication depend on `ci.yml` or redesign this as a
+`workflow_run` chain.
 
 Update `AGENTS.md` and the Makefile only as needed to name the checks. Verify
 workflow YAML statically, run all local equivalents, and confirm the release
@@ -131,9 +134,13 @@ Re-check evaluation items 3.1–3.5 and implement all applicable fixes:
    command contract.
 3. Run `sync` with the cycle context, check its error, and log a warning with
    server/cycle context rather than silently discarding it.
-4. Replace CLI single reads with `io.ReadAll(io.LimitReader(...))` using a
-   1 MiB response cap and return an error for an over-cap response. Check HTTP
-   status before presenting a body as success.
+4. Replace CLI single reads with a cap-plus-one read using
+   `io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))` and a 1 MiB
+   response cap. Reject a response when `len(body) > maxResponseBytes` before
+   presenting it; for accepted responses, use the first `maxResponseBytes`
+   bytes (or the full body when shorter). This detects over-cap responses
+   rather than silently truncating them. Check HTTP status before presenting a
+   body as success.
 5. Confirm `lastBackups` remains protected by `cycleMu`; retain the explicit
    comment documenting that invariant and let the race suite be the gate. If
    rechecking finds any access outside that critical section, move the access
