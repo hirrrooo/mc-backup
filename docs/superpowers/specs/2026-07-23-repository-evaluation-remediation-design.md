@@ -95,15 +95,18 @@ Verify tracked-file absence, ignore behavior, version consistency,
 
 ### Phase 1 — CI safety net
 
-Add a separate `.github/workflows/ci.yml` for pull requests and pushes to
-non-main branches. It must run formatting failure detection (`test -z
-"$(gofmt -l internal cmd)"`), `go vet ./...`, and `go test -race -cover
-./...`. Keep the test and release-build verification in `release.yml`; its
-existing release build and rolling-tag permissions remain unchanged. Release
-publishing remains gated by the successful verification in `release.yml`
-itself, since the separately triggered CI workflow can run concurrently. Do
-not make release publication depend on `ci.yml` or redesign this as a
-`workflow_run` chain.
+Add a separate `.github/workflows/ci.yml` for pull requests and pushes
+(including main) to provide required feedback. It must run formatting failure
+detection (`test -z "$(gofmt -l internal cmd)"`), `go vet ./...`, and `go test
+-race -cover ./...`. `release.yml` keeps its own release verification and,
+before publishing, must independently run the same Go quality gates relevant to
+its environment (`gofmt` check, `go vet ./...`, `go test -race ./...`, and
+`golangci-lint` after it is adopted). Release only occurs after those in-workflow
+steps succeed. Its existing release build and rolling-tag permissions remain
+unchanged. Release publishing remains gated by the successful verification in
+`release.yml` itself, since the separately triggered CI workflow can run
+concurrently. Do not make release publication depend on `ci.yml` or redesign
+this as a `workflow_run` chain.
 
 Update `AGENTS.md` and the Makefile only as needed to name the checks. Verify
 workflow YAML statically, run all local equivalents, and confirm the release
@@ -137,10 +140,9 @@ Re-check evaluation items 3.1–3.5 and implement all applicable fixes:
 4. Replace CLI single reads with a cap-plus-one read using
    `io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))` and a 1 MiB
    response cap. Reject a response when `len(body) > maxResponseBytes` before
-   presenting it; for accepted responses, use the first `maxResponseBytes`
-   bytes (or the full body when shorter). This detects over-cap responses
-   rather than silently truncating them. Check HTTP status before presenting a
-   body as success.
+   presenting it; accepted responses use the body as-is, since it is known to
+   fit. This detects over-cap responses rather than silently truncating them. Check
+   HTTP status before presenting a body as success.
 5. Confirm `lastBackups` remains protected by `cycleMu`; retain the explicit
    comment documenting that invariant and let the race suite be the gate. If
    rechecking finds any access outside that critical section, move the access
@@ -154,9 +156,11 @@ handling, and race coverage must pass.
 
 Adopt a pinned, repository-configured `golangci-lint` version and committed
 `.golangci.yml` with `errcheck`, `ineffassign`, `staticcheck`, and `gosec`.
-Wire the same version/configuration into CI and a Makefile target. Fix findings
-that are in scope, including ignored errors and unsafe shell-command concerns;
-do not suppress a finding without a narrowly documented reason.
+Wire the same version/configuration into `ci.yml`, `release.yml` (so `release.yml`
+independently runs `golangci-lint` after it is adopted, ensuring release only
+occurs after those steps succeed), and a Makefile target. Fix findings that are in
+scope, including ignored errors and unsafe shell-command concerns; do not suppress
+a finding without a narrowly documented reason.
 
 Raise tests in this order: `BackupServer` success and save-on-on-error,
 local/NAS prune day/count paths, update/checksum mismatch paths, config
