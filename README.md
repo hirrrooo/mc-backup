@@ -168,6 +168,12 @@ excludes = ["*.jar"]                   # per-server excludes (overrides global; 
 `target = "local"` uses the local layout and does not contact the NAS.
 `target = "nas"` uses the NAS layout and its SSH/sentinel requirements.
 
+### Fail-Fast Configuration Validation
+
+Configuration is validated on startup and live reload:
+- **Listen Address Validation**: `global.listen_addr` must be a valid `host:port` pair. Non-loopback interface bindings require `global.api_token` to be set.
+- **NAS Target Validation**: If any enabled or configured server targets NAS (or defaults to the omitted NAS target), `[nas]` configuration must specify non-empty values for `ssh_host`, `ssh_user`, and `dest_root`. Missing NAS fields cause fast failure on configuration load.
+
 ### Rsync Excludes
 
 Rsync exclude patterns can be configured globally in `[global]` as `excludes` or per-server in `[server.<name>]` as `excludes`.
@@ -210,6 +216,17 @@ The daemon exposes an HTTP status API on `global.listen_addr`.
 - **Loopback binding** (`127.0.0.1`, `localhost`, `::1`) is recommended and default. `api_token` is optional when bound to loopback.
 - **Remote interface binding** (non-loopback IP/interface) **requires** `global.api_token` to be set; daemon configuration validation will reject non-loopback bindings without a token.
 - When `global.api_token` is set, CLI mutating commands (`mc-backup backup`, `mc-backup scan`, `mc-backup cancel`) automatically attach the configured bearer header.
+
+### Self-Updating (`mc-backup update`)
+
+The `mc-backup update` command downloads the latest release, verifies its SHA-256 checksum, and replaces the running installation:
+
+1. Downloads the updated binary and checksum file.
+2. Stops the service via `sudo systemctl stop mc-backup`.
+3. Overwrites the current binary via `sudo mv`.
+4. Restarts the service via `sudo systemctl start mc-backup`.
+
+Note: `mc-backup update` requires appropriate `sudo` permissions for `systemctl` (service control) and `mv` (binary replacement in `/usr/local/bin`).
 
 ## NAS Setup
 

@@ -163,8 +163,12 @@ func TestEnvOverrideCaseInsensitiveServerName(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
 	content := []byte(`
+[local]
+dest_root = "/tmp"
+
 [server.Creative]
 enabled = false
+target = "local"
 rcon_password = "filepass"
 `)
 	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
@@ -189,7 +193,9 @@ func TestSaveConfig(t *testing.T) {
 listen_addr = "127.0.0.1:47990"
 
 [nas]
+ssh_user = "backup"
 ssh_host = "nas.local"
+dest_root = "/volume1/backups"
 `)
 	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -226,8 +232,12 @@ func TestEnvOverrideServerNameWithUnderscore(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
 	content := []byte(`
+[local]
+dest_root = "/tmp"
+
 [server.my_creative]
 enabled = true
+target = "local"
 rcon_password = "filepass"
 `)
 	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
@@ -254,10 +264,10 @@ func TestSetConfigValueDoesNotDuplicateAutoServers(t *testing.T) {
 	cfgPath := filepath.Join(tmp, "config.toml")
 	autoPath := autoServersPath(cfgPath)
 
-	if err := os.WriteFile(cfgPath, []byte("[global]\nmax_mbps = 40.0\n"), 0600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[global]\nmax_mbps = 40.0\n[local]\ndest_root = \"/tmp\"\n"), 0600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
-	if err := os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"secret\"\n"), 0600); err != nil {
+	if err := os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"secret\"\n"), 0600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
@@ -287,10 +297,10 @@ func TestSetConfigValueUpdatesAutoServerInAutoFile(t *testing.T) {
 	cfgPath := filepath.Join(tmp, "config.toml")
 	autoPath := autoServersPath(cfgPath)
 
-	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[global]\n[local]\ndest_root = \"/tmp\"\n"), 0600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
-	if err := os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"old\"\n"), 0600); err != nil {
+	if err := os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"old\"\n"), 0600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
@@ -356,7 +366,7 @@ func TestReadLastSnapshotsSkipsMalformedLines(t *testing.T) {
 func TestSaveAutoServersAtomicRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[global]\n\n[nas]\nssh_user = \"backup\"\nssh_host = \"nas.local\"\ndest_root = \"/volume1/backups\"\n"), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -656,6 +666,148 @@ listen_addr = "0.0.0.0:47990"
 	}
 }
 
+func TestValidateConfigNAS(t *testing.T) {
+	tests := []struct {
+		name        string
+		nas         NASConfig
+		servers     map[string]ServerConfig
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "missing ssh_host for nas target",
+			nas: NASConfig{
+				SSHUser:  "backup",
+				DestRoot: "/volume1/backups",
+			},
+			servers: map[string]ServerConfig{
+				"srv1": {Enabled: true, Target: "nas"},
+			},
+			wantErr:     true,
+			errContains: "ssh_host",
+		},
+		{
+			name: "missing ssh_user for nas target",
+			nas: NASConfig{
+				SSHHost:  "nas.local",
+				DestRoot: "/volume1/backups",
+			},
+			servers: map[string]ServerConfig{
+				"srv1": {Enabled: true, Target: "nas"},
+			},
+			wantErr:     true,
+			errContains: "ssh_user",
+		},
+		{
+			name: "missing dest_root for nas target",
+			nas: NASConfig{
+				SSHHost: "nas.local",
+				SSHUser: "backup",
+			},
+			servers: map[string]ServerConfig{
+				"srv1": {Enabled: true, Target: "nas"},
+			},
+			wantErr:     true,
+			errContains: "dest_root",
+		},
+		{
+			name: "all valid fields for nas target",
+			nas: NASConfig{
+				SSHHost:  "nas.local",
+				SSHUser:  "backup",
+				DestRoot: "/volume1/backups",
+			},
+			servers: map[string]ServerConfig{
+				"srv1": {Enabled: true, Target: "nas"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "local target only without nas fields is valid",
+			nas:  NASConfig{},
+			servers: map[string]ServerConfig{
+				"srv1": {Enabled: true, Target: "local"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "omitted/default target defaults to nas and requires fields",
+			nas:  NASConfig{},
+			servers: map[string]ServerConfig{
+				"srv1": {Enabled: true, Target: ""},
+			},
+			wantErr:     true,
+			errContains: "ssh_host",
+		},
+		{
+			name:    "no servers configured without nas fields is valid",
+			nas:     NASConfig{},
+			servers: map[string]ServerConfig{},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Global: GlobalConfig{
+					ListenAddr: "127.0.0.1:47990",
+				},
+				NAS:     tt.nas,
+				Servers: tt.servers,
+			}
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil && tt.errContains != "" {
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.errContains)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadConfigNASValidationWithEnvOverrides(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+
+[nas]
+ssh_user = "backup"
+dest_root = "/volume1/backups"
+
+[server.creative]
+enabled = true
+target = "nas"
+`)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// First load should fail because ssh_host is missing
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("LoadConfig should fail when NAS ssh_host is missing")
+	}
+
+	// Set env override for missing NAS ssh_host
+	t.Setenv("MC_BACKUP_NAS_SSH_HOST", "nas.local")
+
+	// Now load should succeed
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig with env override failed: %v", err)
+	}
+	if cfg.NAS.SSHHost != "nas.local" {
+		t.Errorf("cfg.NAS.SSHHost = %q, want 'nas.local'", cfg.NAS.SSHHost)
+	}
+}
+
 func TestExcludesResolution(t *testing.T) {
 	// 1. Omitted global and server -> default excludes
 	cfgDefault := &Config{}
@@ -707,6 +859,11 @@ func TestExcludesTOMLRoundTripAndNilPreservation(t *testing.T) {
 [global]
 listen_addr = "127.0.0.1:47990"
 excludes = ["*.tmp", "cache"]
+
+[nas]
+ssh_user = "backup"
+ssh_host = "nas.local"
+dest_root = "/volume1/backups"
 
 [server.creative]
 enabled = true
@@ -772,7 +929,7 @@ enabled = true
 func TestExcludesEscapingInSaveAutoServers(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n"), 0600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n\n[nas]\nssh_user = \"backup\"\nssh_host = \"nas.local\"\ndest_root = \"/volume1/backups\"\n"), 0600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
@@ -809,11 +966,16 @@ func TestExcludesEnvOverrides(t *testing.T) {
 [global]
 listen_addr = "127.0.0.1:47990"
 
+[local]
+dest_root = "/tmp"
+
 [server.creative]
 enabled = true
+target = "local"
 
 [server.survival]
 enabled = true
+target = "local"
 excludes = ["*.tmp"]
 `)
 	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
@@ -851,8 +1013,12 @@ func TestExcludesGetSetConfig(t *testing.T) {
 [global]
 listen_addr = "127.0.0.1:47990"
 
+[local]
+dest_root = "/tmp"
+
 [server.creative]
 enabled = true
+target = "local"
 `)
 	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)

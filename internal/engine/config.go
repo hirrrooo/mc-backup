@@ -139,6 +139,32 @@ func (c *Config) Validate() error {
 	if !isLoopbackHost(host) && c.Global.APIToken == "" {
 		return fmt.Errorf("invalid config: non-loopback global.listen_addr %q requires global.api_token to be set", c.Global.ListenAddr)
 	}
+
+	hasNASTarget := false
+	for _, s := range c.Servers {
+		t := strings.ToLower(strings.TrimSpace(s.Target))
+		if t == "" || t == "nas" {
+			hasNASTarget = true
+			break
+		}
+	}
+
+	if hasNASTarget {
+		var missing []string
+		if strings.TrimSpace(c.NAS.SSHHost) == "" {
+			missing = append(missing, "ssh_host")
+		}
+		if strings.TrimSpace(c.NAS.SSHUser) == "" {
+			missing = append(missing, "ssh_user")
+		}
+		if strings.TrimSpace(c.NAS.DestRoot) == "" {
+			missing = append(missing, "dest_root")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("invalid config: NAS target enabled but missing required fields in [nas] section (%s)", strings.Join(missing, ", "))
+		}
+	}
+
 	return nil
 }
 
