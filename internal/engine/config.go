@@ -93,6 +93,24 @@ func DefaultExcludes() []string {
 	return []string{"*.jar", "cache", "logs", "*.tmp"}
 }
 
+func DefaultConfig() *Config {
+	return &Config{
+		Global: GlobalConfig{
+			ListenAddr:     "127.0.0.1:47990",
+			BackupInterval: Duration{24 * time.Hour},
+			InitialDelay:   Duration{2 * time.Minute},
+			MaxMBps:        40.0,
+		},
+		NAS: NASConfig{
+			SSHPort: 22,
+		},
+		Retention: RetentionConfig{
+			PruneDays: 7,
+		},
+		Servers: make(map[string]ServerConfig),
+	}
+}
+
 func (c *Config) ResolveGlobalExcludes() []string {
 	if c.Global.Excludes != nil {
 		res := make([]string, len(*c.Global.Excludes))
@@ -138,6 +156,12 @@ func normalizeTarget(t string) string {
 func (c *Config) Validate() error {
 	if c.Global.ListenAddr == "" {
 		return fmt.Errorf("invalid config: global.listen_addr is required")
+	}
+	if c.Global.BackupInterval.Duration <= 0 {
+		return fmt.Errorf("invalid config: global.backup_interval must be greater than 0")
+	}
+	if c.Global.InitialDelay.Duration < 0 {
+		return fmt.Errorf("invalid config: global.initial_delay must be non-negative")
 	}
 	host, portStr, err := net.SplitHostPort(c.Global.ListenAddr)
 	if err != nil {
@@ -218,21 +242,7 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func loadConfigFile(path string) (*Config, error) {
-	cfg := &Config{
-		Global: GlobalConfig{
-			ListenAddr:     "127.0.0.1:47990",
-			BackupInterval: Duration{24 * time.Hour},
-			InitialDelay:   Duration{2 * time.Minute},
-			MaxMBps:        40.0,
-		},
-		NAS: NASConfig{
-			SSHPort: 22,
-		},
-		Retention: RetentionConfig{
-			PruneDays: 7,
-		},
-		Servers: make(map[string]ServerConfig),
-	}
+	cfg := DefaultConfig()
 
 	autoPath := strings.TrimSuffix(path, ".toml") + "-auto.toml"
 	if _, err := toml.DecodeFile(autoPath, cfg); err != nil && !os.IsNotExist(err) {
@@ -645,13 +655,13 @@ func setGlobalField(v *GlobalConfig, key, val string) error {
 		v.MaxMBps = f
 	case "backup_interval":
 		d, err := time.ParseDuration(val)
-		if err != nil {
+		if err != nil || d <= 0 {
 			return fmt.Errorf("invalid backup_interval duration: %q", val)
 		}
 		v.BackupInterval = Duration{d}
 	case "initial_delay":
 		d, err := time.ParseDuration(val)
-		if err != nil {
+		if err != nil || d < 0 {
 			return fmt.Errorf("invalid initial_delay duration: %q", val)
 		}
 		v.InitialDelay = Duration{d}

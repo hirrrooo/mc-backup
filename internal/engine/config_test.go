@@ -628,12 +628,9 @@ func TestConfigValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &Config{
-				Global: GlobalConfig{
-					ListenAddr: tt.listenAddr,
-					APIToken:   tt.apiToken,
-				},
-			}
+			cfg := DefaultConfig()
+			cfg.Global.ListenAddr = tt.listenAddr
+			cfg.Global.APIToken = tt.apiToken
 			err := cfg.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
@@ -753,14 +750,10 @@ func TestValidateConfigNAS(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &Config{
-				Global: GlobalConfig{
-					ListenAddr: "127.0.0.1:47990",
-				},
-				Local:   tt.local,
-				NAS:     tt.nas,
-				Servers: tt.servers,
-			}
+			cfg := DefaultConfig()
+			cfg.Local = tt.local
+			cfg.NAS = tt.nas
+			cfg.Servers = tt.servers
 			err := cfg.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
@@ -815,33 +808,27 @@ target = "nas"
 
 func TestValidateActiveTargetsOnly(t *testing.T) {
 	// Disabled NAS server with empty NAS section -> valid
-	cfgDisabledNAS := &Config{
-		Global: GlobalConfig{ListenAddr: "127.0.0.1:47990"},
-		Servers: map[string]ServerConfig{
-			"srv1": {Enabled: false, Target: "nas"},
-		},
+	cfgDisabledNAS := DefaultConfig()
+	cfgDisabledNAS.Servers = map[string]ServerConfig{
+		"srv1": {Enabled: false, Target: "nas"},
 	}
 	if err := cfgDisabledNAS.Validate(); err != nil {
 		t.Errorf("disabled NAS server should not require NAS config, got: %v", err)
 	}
 
 	// Disabled local server with empty local.dest_root -> valid
-	cfgDisabledLocal := &Config{
-		Global: GlobalConfig{ListenAddr: "127.0.0.1:47990"},
-		Servers: map[string]ServerConfig{
-			"srv1": {Enabled: false, Target: "local"},
-		},
+	cfgDisabledLocal := DefaultConfig()
+	cfgDisabledLocal.Servers = map[string]ServerConfig{
+		"srv1": {Enabled: false, Target: "local"},
 	}
 	if err := cfgDisabledLocal.Validate(); err != nil {
 		t.Errorf("disabled local server should not require local.dest_root, got: %v", err)
 	}
 
 	// Enabled local server with empty local.dest_root -> invalid
-	cfgEnabledLocalMissingRoot := &Config{
-		Global: GlobalConfig{ListenAddr: "127.0.0.1:47990"},
-		Servers: map[string]ServerConfig{
-			"srv1": {Enabled: true, Target: "local"},
-		},
+	cfgEnabledLocalMissingRoot := DefaultConfig()
+	cfgEnabledLocalMissingRoot.Servers = map[string]ServerConfig{
+		"srv1": {Enabled: true, Target: "local"},
 	}
 	if err := cfgEnabledLocalMissingRoot.Validate(); err == nil {
 		t.Error("enabled local server without local.dest_root should fail validation")
@@ -850,12 +837,10 @@ func TestValidateActiveTargetsOnly(t *testing.T) {
 	}
 
 	// Enabled local server with local.dest_root -> valid
-	cfgEnabledLocalValid := &Config{
-		Global: GlobalConfig{ListenAddr: "127.0.0.1:47990"},
-		Local:  LocalConfig{DestRoot: "/tmp"},
-		Servers: map[string]ServerConfig{
-			"srv1": {Enabled: true, Target: "local"},
-		},
+	cfgEnabledLocalValid := DefaultConfig()
+	cfgEnabledLocalValid.Local = LocalConfig{DestRoot: "/tmp"}
+	cfgEnabledLocalValid.Servers = map[string]ServerConfig{
+		"srv1": {Enabled: true, Target: "local"},
 	}
 	if err := cfgEnabledLocalValid.Validate(); err != nil {
 		t.Errorf("enabled local server with local.dest_root failed validation: %v", err)
@@ -926,12 +911,10 @@ func TestValidateServerTarget(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &Config{
-				Global:  GlobalConfig{ListenAddr: "127.0.0.1:47990"},
-				NAS:     tt.nas,
-				Local:   tt.local,
-				Servers: map[string]ServerConfig{tt.serverName: tt.server},
-			}
+			cfg := DefaultConfig()
+			cfg.NAS = tt.nas
+			cfg.Local = tt.local
+			cfg.Servers = map[string]ServerConfig{tt.serverName: tt.server}
 			err := cfg.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
@@ -987,16 +970,14 @@ func TestResolveBackupTargetAndValidationNormalization(t *testing.T) {
 	}
 
 	// Normalization in Validate()
-	cfg := &Config{
-		Global: GlobalConfig{ListenAddr: "127.0.0.1:47990"},
-		NAS: NASConfig{
-			SSHUser:  "backup",
-			SSHHost:  "nas.local",
-			DestRoot: "/volume1/backups",
-		},
-		Servers: map[string]ServerConfig{
-			"srv1": {Enabled: true, Target: " Nas "},
-		},
+	cfg := DefaultConfig()
+	cfg.NAS = NASConfig{
+		SSHUser:  "backup",
+		SSHHost:  "nas.local",
+		DestRoot: "/volume1/backups",
+	}
+	cfg.Servers = map[string]ServerConfig{
+		"srv1": {Enabled: true, Target: " Nas "},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate with target ' Nas ' failed: %v", err)
@@ -1903,6 +1884,98 @@ func TestSaveSplitRollbackPreservesBackupOnRollbackFailure(t *testing.T) {
 	}
 	if !bytes.Equal(mainContent, backupData) {
 		t.Errorf("preserved backup content mismatch:\nGot:\n%s\nWant:\n%s", backupData, mainContent)
+	}
+}
+
+func TestNonPositiveBackupIntervalAndDelayValidation(t *testing.T) {
+	validCfg := func() *Config {
+		return &Config{
+			Global: GlobalConfig{
+				ListenAddr:     "127.0.0.1:47990",
+				BackupInterval: Duration{1 * time.Hour},
+				InitialDelay:   Duration{2 * time.Minute},
+			},
+		}
+	}
+
+	t.Run("zero backup interval fails validation", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Global.BackupInterval = Duration{0}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "backup_interval") {
+			t.Errorf("expected error containing 'backup_interval', got: %v", err)
+		}
+	})
+
+	t.Run("negative backup interval fails validation", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Global.BackupInterval = Duration{-1 * time.Hour}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "backup_interval") {
+			t.Errorf("expected error containing 'backup_interval', got: %v", err)
+		}
+	})
+
+	t.Run("negative initial delay fails validation", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Global.InitialDelay = Duration{-1 * time.Minute}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "initial_delay") {
+			t.Errorf("expected error containing 'initial_delay', got: %v", err)
+		}
+	})
+
+	t.Run("zero initial delay passes validation", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Global.InitialDelay = Duration{0}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("expected zero initial delay to be valid, got: %v", err)
+		}
+	})
+}
+
+func TestLoadConfigAndSetConfigValueRejectsInvalidIntervalAndDelay(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	writeCfg := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(cfgPath, []byte(content), 0600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	writeCfg("[global]\nlisten_addr = \"127.0.0.1:47990\"\nbackup_interval = \"0s\"\n")
+	if _, err := LoadConfig(cfgPath); err == nil || !strings.Contains(err.Error(), "backup_interval") {
+		t.Errorf("LoadConfig zero backup_interval expected error, got: %v", err)
+	}
+
+	writeCfg("[global]\nlisten_addr = \"127.0.0.1:47990\"\nbackup_interval = \"-1h\"\n")
+	if _, err := LoadConfig(cfgPath); err == nil || !strings.Contains(err.Error(), "backup_interval") {
+		t.Errorf("LoadConfig negative backup_interval expected error, got: %v", err)
+	}
+
+	writeCfg("[global]\nlisten_addr = \"127.0.0.1:47990\"\ninitial_delay = \"-5s\"\n")
+	if _, err := LoadConfig(cfgPath); err == nil || !strings.Contains(err.Error(), "initial_delay") {
+		t.Errorf("LoadConfig negative initial_delay expected error, got: %v", err)
+	}
+
+	writeCfg("[global]\nlisten_addr = \"127.0.0.1:47990\"\nbackup_interval = \"1h\"\ninitial_delay = \"0s\"\n")
+	if cfg, err := LoadConfig(cfgPath); err != nil {
+		t.Errorf("LoadConfig zero initial_delay unexpected error: %v", err)
+	} else if cfg.Global.InitialDelay.Duration != 0 {
+		t.Errorf("expected 0s initial_delay, got %v", cfg.Global.InitialDelay.Duration)
+	}
+
+	// Test SetConfigValue strict setter rejection
+	if err := SetConfigValue(cfgPath, "global.backup_interval", "0s"); err == nil {
+		t.Error("SetConfigValue global.backup_interval 0s expected error, got nil")
+	}
+	if err := SetConfigValue(cfgPath, "global.backup_interval", "-10s"); err == nil {
+		t.Error("SetConfigValue global.backup_interval -10s expected error, got nil")
+	}
+	if err := SetConfigValue(cfgPath, "global.initial_delay", "-1s"); err == nil {
+		t.Error("SetConfigValue global.initial_delay -1s expected error, got nil")
+	}
+	if err := SetConfigValue(cfgPath, "global.initial_delay", "0s"); err != nil {
+		t.Errorf("SetConfigValue global.initial_delay 0s unexpected error: %v", err)
 	}
 }
 
