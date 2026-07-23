@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -73,3 +74,41 @@ func (fakeCommand) CombinedOutput() ([]byte, error) { return nil, nil }
 func (fakeCommand) SetStdout(io.Writer) {}
 
 func (fakeCommand) SetStderr(io.Writer) {}
+
+func (fakeCommand) SetEnv([]string) {}
+
+func TestExecCommandSetEnv(t *testing.T) {
+	ctx := context.Background()
+	ec := execCommandRunner{}.CommandContext(ctx, "true").(execCommand)
+	ec.SetEnv([]string{"TEST_ENV_VAR_1=value1"})
+	if len(ec.cmd.Env) == 0 {
+		t.Fatal("expected cmd.Env to be set")
+	}
+	hasPath := false
+	hasVar1 := false
+	for _, e := range ec.cmd.Env {
+		if strings.HasPrefix(e, "PATH=") {
+			hasPath = true
+		}
+		if e == "TEST_ENV_VAR_1=value1" {
+			hasVar1 = true
+		}
+	}
+	if !hasPath {
+		t.Error("expected PATH from inherited os.Environ in cmd.Env")
+	}
+	if !hasVar1 {
+		t.Error("expected TEST_ENV_VAR_1 in cmd.Env")
+	}
+
+	ec.SetEnv([]string{"TEST_ENV_VAR_2=value2"})
+	hasVar2 := false
+	for _, e := range ec.cmd.Env {
+		if e == "TEST_ENV_VAR_2=value2" {
+			hasVar2 = true
+		}
+	}
+	if !hasVar1 || !hasVar2 {
+		t.Error("expected both injected env vars to be present after second SetEnv call")
+	}
+}

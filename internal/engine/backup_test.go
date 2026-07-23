@@ -13,20 +13,22 @@ import (
 type recordingCommand struct {
 	name string
 	args []string
+	env  []string
 }
 
-func (c recordingCommand) Run() error                      { return nil }
-func (c recordingCommand) Output() ([]byte, error)         { return nil, nil }
-func (c recordingCommand) CombinedOutput() ([]byte, error) { return nil, nil }
-func (c recordingCommand) SetStdout(_ io.Writer)           {}
-func (c recordingCommand) SetStderr(_ io.Writer)           {}
+func (c *recordingCommand) Run() error                      { return nil }
+func (c *recordingCommand) Output() ([]byte, error)         { return nil, nil }
+func (c *recordingCommand) CombinedOutput() ([]byte, error) { return nil, nil }
+func (c *recordingCommand) SetStdout(_ io.Writer)           {}
+func (c *recordingCommand) SetStderr(_ io.Writer)           {}
+func (c *recordingCommand) SetEnv(env []string)             { c.env = append(c.env, env...) }
 
 type recordingRunner struct {
-	commands []recordingCommand
+	commands []*recordingCommand
 }
 
 func (r *recordingRunner) CommandContext(_ context.Context, name string, args ...string) command {
-	c := recordingCommand{name: name, args: args}
+	c := &recordingCommand{name: name, args: args}
 	r.commands = append(r.commands, c)
 	return c
 }

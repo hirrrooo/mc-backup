@@ -1,9 +1,13 @@
 package engine
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestRconCommand(t *testing.T) {
-	cmd := rconCommand("mc-server", "hunter2", "save-off")
+	cmd := rconCommand("mc-server", "save-off")
 	if len(cmd) < 4 {
 		t.Fatal("cmd too short")
 	}
@@ -14,18 +18,25 @@ func TestRconCommand(t *testing.T) {
 		t.Errorf("expected exec, got %q", cmd[1])
 	}
 
-	foundPassword := false
+	foundFlag := false
+	foundVarName := false
 	foundContainer := false
-	for _, arg := range cmd {
-		if arg == "RCON_PASSWORD=hunter2" {
-			foundPassword = true
+	for i, arg := range cmd {
+		if arg == "-e" {
+			foundFlag = true
+			if i+1 < len(cmd) && cmd[i+1] == "RCON_PASSWORD" {
+				foundVarName = true
+			}
 		}
 		if arg == "mc-server" {
 			foundContainer = true
 		}
+		if strings.Contains(arg, "hunter2") {
+			t.Errorf("secret password found in docker argv: %q", arg)
+		}
 	}
-	if !foundPassword {
-		t.Error("missing RCON_PASSWORD env var in args")
+	if !foundFlag || !foundVarName {
+		t.Error("missing '-e RCON_PASSWORD' in docker args")
 	}
 	if !foundContainer {
 		t.Error("missing container name in args")
@@ -36,6 +47,37 @@ func TestRconCommand(t *testing.T) {
 	}
 	if cmd[len(cmd)-2] != "rcon-cli" {
 		t.Errorf("expected rcon-cli, got %q", cmd[len(cmd)-2])
+	}
+}
+
+func TestRconCommandSecurity(t *testing.T) {
+	runner := &recordingRunner{}
+
+	withCommandRunner(runner, func() {
+		_ = runRcon(context.Background(), "mc-server", "secretPass123", "save-off", 1, 0)
+		_, _ = rconOutput(context.Background(), "mc-server", "secretPass123", "list")
+	})
+
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected 2 recorded commands, got %d", len(runner.commands))
+	}
+
+	for i, cmd := range runner.commands {
+		for _, arg := range cmd.args {
+			if strings.Contains(arg, "secretPass123") {
+				t.Fatalf("cmd %d: secret password found in process arguments: %v", i, cmd.args)
+			}
+		}
+
+		foundEnvSecret := false
+		for _, env := range cmd.env {
+			if env == "RCON_PASSWORD=secretPass123" {
+				foundEnvSecret = true
+			}
+		}
+		if !foundEnvSecret {
+			t.Errorf("cmd %d: expected RCON_PASSWORD=secretPass123 in child environment, got: %v", i, cmd.env)
+		}
 	}
 }
 

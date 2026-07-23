@@ -10,10 +10,10 @@ import (
 	"log/slog"
 )
 
-func rconCommand(container, password, cmd string) []string {
+func rconCommand(container, cmd string) []string {
 	return []string{
 		"docker", "exec",
-		"-e", fmt.Sprintf("RCON_PASSWORD=%s", password),
+		"-e", "RCON_PASSWORD",
 		container,
 		"rcon-cli",
 		cmd,
@@ -21,9 +21,10 @@ func rconCommand(container, password, cmd string) []string {
 }
 
 func runRcon(ctx context.Context, container, password, command string, retries int, retryInterval time.Duration) error {
-	args := rconCommand(container, password, command)
+	args := rconCommand(container, command)
 	for i := 0; i < retries; i++ {
 		cmd := commandRunner.CommandContext(ctx, args[0], args[1:]...)
+		cmd.SetEnv([]string{fmt.Sprintf("RCON_PASSWORD=%s", password)})
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			return nil
@@ -45,8 +46,9 @@ func runRcon(ctx context.Context, container, password, command string, retries i
 }
 
 func rconOutput(ctx context.Context, container, password, command string) (string, error) {
-	args := rconCommand(container, password, command)
+	args := rconCommand(container, command)
 	cmd := commandRunner.CommandContext(ctx, args[0], args[1:]...)
+	cmd.SetEnv([]string{fmt.Sprintf("RCON_PASSWORD=%s", password)})
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
