@@ -540,7 +540,7 @@ func loadAutoServerNames(cfgPath string) map[string]bool {
 		return names
 	}
 	for k := range tmp.Servers {
-		names[k] = true
+		names[strings.ToLower(k)] = true
 	}
 	return names
 }

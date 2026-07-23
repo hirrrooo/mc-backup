@@ -1979,6 +1979,43 @@ func TestLoadConfigAndSetConfigValueRejectsInvalidIntervalAndDelay(t *testing.T)
 	}
 }
 
+func TestSaveSplitNormalizesAutoServerNames(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+
+	mainContent := []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n\n[local]\ndest_root = \"/tmp\"\n")
+	autoContent := []byte("[server.Creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"secret\"\n")
+
+	if err := os.WriteFile(cfgPath, mainContent, 0600); err != nil {
+		t.Fatalf("write main config: %v", err)
+	}
+	if err := os.WriteFile(autoPath, autoContent, 0600); err != nil {
+		t.Fatalf("write auto config: %v", err)
+	}
+
+	// Update global value, which calls saveSplit
+	if err := SetConfigValue(cfgPath, "global.max_mbps", "20"); err != nil {
+		t.Fatalf("SetConfigValue: %v", err)
+	}
+
+	mainBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile main: %v", err)
+	}
+	if strings.Contains(strings.ToLower(string(mainBytes)), "creative") {
+		t.Fatalf("mixed-case auto server leaked into main config:\n%s", mainBytes)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if s, ok := cfg.Servers["creative"]; !ok || s.RconPassword != "secret" {
+		t.Fatalf("auto server creative not loaded correctly from sidecar: %#v", s)
+	}
+}
+
 func TestDurationMarshalUnmarshal(t *testing.T) {
 	d := Duration{Duration: 5 * time.Minute}
 	bytes, err := d.MarshalText()
