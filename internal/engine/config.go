@@ -123,6 +123,10 @@ func parseExcludesValue(val string) *[]string {
 	return &res
 }
 
+func normalizeTarget(t string) string {
+	return strings.ToLower(strings.TrimSpace(t))
+}
+
 func (c *Config) Validate() error {
 	if c.Global.ListenAddr == "" {
 		return fmt.Errorf("invalid config: global.listen_addr is required")
@@ -141,11 +145,16 @@ func (c *Config) Validate() error {
 	}
 
 	hasNASTarget := false
+	hasLocalTarget := false
 	for _, s := range c.Servers {
-		t := strings.ToLower(strings.TrimSpace(s.Target))
+		if !s.Enabled {
+			continue
+		}
+		t := normalizeTarget(s.Target)
 		if t == "" || t == "nas" {
 			hasNASTarget = true
-			break
+		} else if t == "local" {
+			hasLocalTarget = true
 		}
 	}
 
@@ -162,6 +171,12 @@ func (c *Config) Validate() error {
 		}
 		if len(missing) > 0 {
 			return fmt.Errorf("invalid config: NAS target enabled but missing required fields in [nas] section (%s)", strings.Join(missing, ", "))
+		}
+	}
+
+	if hasLocalTarget {
+		if strings.TrimSpace(c.Local.DestRoot) == "" {
+			return fmt.Errorf("invalid config: local target enabled but missing required field local.dest_root")
 		}
 	}
 
@@ -238,14 +253,14 @@ func normalizeDestRoot(root string) string {
 }
 
 func resolveBackupTarget(serverName string, server ServerConfig, local LocalConfig) (string, error) {
-	target := server.Target
+	target := normalizeTarget(server.Target)
 	if target == "" {
 		target = "nas"
 	}
 	if target != "local" && target != "nas" {
-		return "", fmt.Errorf("server %q has invalid backup target %q (want %q or %q)", serverName, target, "local", "nas")
+		return "", fmt.Errorf("server %q has invalid backup target %q (want %q or %q)", serverName, server.Target, "local", "nas")
 	}
-	if target == "local" && local.DestRoot == "" {
+	if target == "local" && strings.TrimSpace(local.DestRoot) == "" {
 		return "", fmt.Errorf("server %q target %q requires local.dest_root", serverName, target)
 	}
 	return target, nil
@@ -477,7 +492,7 @@ func setNASField(v *NASConfig, key, val string) {
 	case "ssh_key":
 		v.SSHKey = val
 	case "dest_root":
-		v.DestRoot = val
+		v.DestRoot = normalizeDestRoot(val)
 	}
 }
 

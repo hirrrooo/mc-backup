@@ -669,6 +669,7 @@ listen_addr = "0.0.0.0:47990"
 func TestValidateConfigNAS(t *testing.T) {
 	tests := []struct {
 		name        string
+		local       LocalConfig
 		nas         NASConfig
 		servers     map[string]ServerConfig
 		wantErr     bool
@@ -723,8 +724,9 @@ func TestValidateConfigNAS(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "local target only without nas fields is valid",
-			nas:  NASConfig{},
+			name:  "local target only without nas fields is valid",
+			local: LocalConfig{DestRoot: "/tmp"},
+			nas:   NASConfig{},
 			servers: map[string]ServerConfig{
 				"srv1": {Enabled: true, Target: "local"},
 			},
@@ -753,6 +755,7 @@ func TestValidateConfigNAS(t *testing.T) {
 				Global: GlobalConfig{
 					ListenAddr: "127.0.0.1:47990",
 				},
+				Local:   tt.local,
 				NAS:     tt.nas,
 				Servers: tt.servers,
 			}
@@ -805,6 +808,137 @@ target = "nas"
 	}
 	if cfg.NAS.SSHHost != "nas.local" {
 		t.Errorf("cfg.NAS.SSHHost = %q, want 'nas.local'", cfg.NAS.SSHHost)
+	}
+}
+
+func TestValidateActiveTargetsOnly(t *testing.T) {
+	// Disabled NAS server with empty NAS section -> valid
+	cfgDisabledNAS := &Config{
+		Global: GlobalConfig{ListenAddr: "127.0.0.1:47990"},
+		Servers: map[string]ServerConfig{
+			"srv1": {Enabled: false, Target: "nas"},
+		},
+	}
+	if err := cfgDisabledNAS.Validate(); err != nil {
+		t.Errorf("disabled NAS server should not require NAS config, got: %v", err)
+	}
+
+	// Disabled local server with empty local.dest_root -> valid
+	cfgDisabledLocal := &Config{
+		Global: GlobalConfig{ListenAddr: "127.0.0.1:47990"},
+		Servers: map[string]ServerConfig{
+			"srv1": {Enabled: false, Target: "local"},
+		},
+	}
+	if err := cfgDisabledLocal.Validate(); err != nil {
+		t.Errorf("disabled local server should not require local.dest_root, got: %v", err)
+	}
+
+	// Enabled local server with empty local.dest_root -> invalid
+	cfgEnabledLocalMissingRoot := &Config{
+		Global: GlobalConfig{ListenAddr: "127.0.0.1:47990"},
+		Servers: map[string]ServerConfig{
+			"srv1": {Enabled: true, Target: "local"},
+		},
+	}
+	if err := cfgEnabledLocalMissingRoot.Validate(); err == nil {
+		t.Error("enabled local server without local.dest_root should fail validation")
+	} else if !strings.Contains(err.Error(), "local.dest_root") {
+		t.Errorf("error %q should contain 'local.dest_root'", err.Error())
+	}
+
+	// Enabled local server with local.dest_root -> valid
+	cfgEnabledLocalValid := &Config{
+		Global: GlobalConfig{ListenAddr: "127.0.0.1:47990"},
+		Local:  LocalConfig{DestRoot: "/tmp"},
+		Servers: map[string]ServerConfig{
+			"srv1": {Enabled: true, Target: "local"},
+		},
+	}
+	if err := cfgEnabledLocalValid.Validate(); err != nil {
+		t.Errorf("enabled local server with local.dest_root failed validation: %v", err)
+	}
+}
+
+func TestResolveBackupTargetAndValidationNormalization(t *testing.T) {
+	// Whitespace and case normalization in resolveBackupTarget
+	got, err := resolveBackupTarget("creative", ServerConfig{Target: " NAS "}, LocalConfig{})
+	if err != nil || got != "nas" {
+		t.Errorf("resolveBackupTarget(' NAS ') = %q, %v; want 'nas', nil", got, err)
+	}
+
+	got, err = resolveBackupTarget("creative", ServerConfig{Target: " LOCAL "}, LocalConfig{DestRoot: "/tmp"})
+	if err != nil || got != "local" {
+		t.Errorf("resolveBackupTarget(' LOCAL ') = %q, %v; want 'local', nil", got, err)
+	}
+
+	// Normalization in Validate()
+	cfg := &Config{
+		Global: GlobalConfig{ListenAddr: "127.0.0.1:47990"},
+		NAS: NASConfig{
+			SSHUser:  "backup",
+			SSHHost:  "nas.local",
+			DestRoot: "/volume1/backups",
+		},
+		Servers: map[string]ServerConfig{
+			"srv1": {Enabled: true, Target: " Nas "},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate with target ' Nas ' failed: %v", err)
+	}
+}
+
+func TestNASDestRootEnvOverrideNormalized(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+
+[nas]
+ssh_user = "backup"
+ssh_host = "nas.local"
+dest_root = "/volume1/backups"
+
+[server.creative]
+enabled = true
+target = "nas"
+`)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("MC_BACKUP_NAS_DEST_ROOT", "/volume2/backups/")
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.NAS.DestRoot != "/volume2/backups" {
+		t.Errorf("cfg.NAS.DestRoot = %q, want '/volume2/backups' (normalized without trailing slash)", cfg.NAS.DestRoot)
+	}
+}
+
+func TestLoadConfigDisabledAutoServer(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+
+	if err := os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n"), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	// Disabled auto server with default/empty target
+	if err := os.WriteFile(autoPath, []byte("[server.creative]\nenabled = false\ncontainer_name = \"creative-mc-1\"\n"), 0600); err != nil {
+		t.Fatalf("write auto config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig should succeed for disabled auto server without NAS config, got: %v", err)
+	}
+	if cfg.Servers["creative"].Enabled {
+		t.Error("creative server should be disabled")
 	}
 }
 

@@ -170,9 +170,12 @@ excludes = ["*.jar"]                   # per-server excludes (overrides global; 
 
 ### Fail-Fast Configuration Validation
 
-Configuration is validated on startup and live reload:
+Configuration is validated on startup and live reload for enabled servers:
 - **Listen Address Validation**: `global.listen_addr` must be a valid `host:port` pair. Non-loopback interface bindings require `global.api_token` to be set.
-- **NAS Target Validation**: If any enabled or configured server targets NAS (or defaults to the omitted NAS target), `[nas]` configuration must specify non-empty values for `ssh_host`, `ssh_user`, and `dest_root`. Missing NAS fields cause fast failure on configuration load.
+- **Target Validation**: Validation checks active enabled servers only:
+  - **NAS Target**: If any enabled server targets NAS (or defaults to the omitted NAS target), `[nas]` configuration must specify non-empty values for `ssh_host`, `ssh_user`, and `dest_root`.
+  - **Local Target**: If any enabled server targets local backup, `[local]` configuration must specify a non-empty `dest_root`.
+  - Disabled servers (including auto-discovered servers before enablement) do not require destination configuration.
 
 ### Rsync Excludes
 
