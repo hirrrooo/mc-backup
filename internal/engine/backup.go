@@ -67,6 +67,7 @@ func runRsync(ctx context.Context, args []string, onProgress func(bytesMoved, to
 	}
 
 	slog.Debug("running rsync", "args", args)
+	//nolint:gosec // G204: rsync binary and options are constructed internally by backup engine
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 
 	if onProgress != nil {

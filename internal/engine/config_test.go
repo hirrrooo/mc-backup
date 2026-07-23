@@ -46,7 +46,9 @@ rcon_password = "hunter2"
 [server.skyblock]
 enabled = true
 `)
-	os.WriteFile(cfgPath, content, 0644)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -125,7 +127,9 @@ ssh_host = "nas.local"
 enabled = true
 rcon_password = "filepass"
 `)
-	os.WriteFile(cfgPath, content, 0644)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	t.Setenv("MC_BACKUP_NAS_SSH_HOST", "override.local")
 	t.Setenv("MC_BACKUP_NAS_SSH_PORT", "2222")
@@ -163,7 +167,9 @@ func TestEnvOverrideCaseInsensitiveServerName(t *testing.T) {
 enabled = false
 rcon_password = "filepass"
 `)
-	os.WriteFile(cfgPath, content, 0644)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 	t.Setenv("MC_BACKUP_SERVER_CREATIVE_RCON_PASSWORD", "envpass")
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -185,7 +191,9 @@ listen_addr = "127.0.0.1:47990"
 [nas]
 ssh_host = "nas.local"
 `)
-	os.WriteFile(cfgPath, content, 0644)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -222,7 +230,9 @@ func TestEnvOverrideServerNameWithUnderscore(t *testing.T) {
 enabled = true
 rcon_password = "filepass"
 `)
-	os.WriteFile(cfgPath, content, 0644)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	t.Setenv("MC_BACKUP_SERVER_MY_CREATIVE_RCON_PASSWORD", "envpass")
 	t.Setenv("MC_BACKUP_SERVER_MY_CREATIVE_PAUSE_IF_NO_PLAYERS", "true")
@@ -244,8 +254,12 @@ func TestSetConfigValueDoesNotDuplicateAutoServers(t *testing.T) {
 	cfgPath := filepath.Join(tmp, "config.toml")
 	autoPath := autoServersPath(cfgPath)
 
-	os.WriteFile(cfgPath, []byte("[global]\nmax_mbps = 40.0\n"), 0644)
-	os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"secret\"\n"), 0644)
+	if err := os.WriteFile(cfgPath, []byte("[global]\nmax_mbps = 40.0\n"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"secret\"\n"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	if err := SetConfigValue(cfgPath, "global.max_mbps", "20"); err != nil {
 		t.Fatalf("SetConfigValue: %v", err)
@@ -273,8 +287,12 @@ func TestSetConfigValueUpdatesAutoServerInAutoFile(t *testing.T) {
 	cfgPath := filepath.Join(tmp, "config.toml")
 	autoPath := autoServersPath(cfgPath)
 
-	os.WriteFile(cfgPath, []byte("[global]\n"), 0644)
-	os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"old\"\n"), 0644)
+	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"old\"\n"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	if err := SetConfigValue(cfgPath, "server.creative.rcon_password", "new"); err != nil {
 		t.Fatalf("SetConfigValue: %v", err)
@@ -322,7 +340,7 @@ func TestReadLastSnapshotsSkipsMalformedLines(t *testing.T) {
 	cfgPath := filepath.Join(tmp, "config.toml")
 	lastPath := lastBackupPath(cfgPath)
 	content := []byte("missing-timestamp\ncreative=not-a-number=/local=/nas\nsurvival=1718110800=/local/survival=\n")
-	if err := os.WriteFile(lastPath, content, 0644); err != nil {
+	if err := os.WriteFile(lastPath, content, 0600); err != nil {
 		t.Fatalf("write last-backup: %v", err)
 	}
 
@@ -338,7 +356,7 @@ func TestReadLastSnapshotsSkipsMalformedLines(t *testing.T) {
 func TestSaveAutoServersAtomicRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -391,10 +409,10 @@ func TestSaveAutoServersEmptyRemovesFile(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
 	autoPath := autoServersPath(cfgPath)
-	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if err := os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\n"), 0644); err != nil {
+	if err := os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\n"), 0600); err != nil {
 		t.Fatalf("write auto: %v", err)
 	}
 
@@ -412,7 +430,7 @@ func TestSaveAutoServersPermissions(t *testing.T) {
 	cfgPath := filepath.Join(tmp, "config.toml")
 	autoPath := autoServersPath(cfgPath)
 
-	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -439,6 +457,7 @@ func TestSaveAutoServersPermissions(t *testing.T) {
 	}
 
 	// Pre-create auto file with permissive mode (0666) to test that replacement resets permissions
+	//nolint:gosec // G306: test intentionally creates file with loose permissions to verify permission fixing
 	if err := os.WriteFile(autoPath, []byte("loose permissions file"), 0666); err != nil {
 		t.Fatalf("pre-write auto file: %v", err)
 	}
@@ -477,7 +496,7 @@ func TestAPITokenConfig(t *testing.T) {
 listen_addr = "127.0.0.1:47990"
 api_token = "toml-secret"
 `)
-	if err := os.WriteFile(cfgPath, content, 0644); err != nil {
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -624,7 +643,7 @@ func TestLoadConfigValidationIntegration(t *testing.T) {
 [global]
 listen_addr = "0.0.0.0:47990"
 `)
-	if err := os.WriteFile(cfgPath, content, 0644); err != nil {
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -696,7 +715,7 @@ excludes = []
 [server.survival]
 enabled = true
 `)
-	if err := os.WriteFile(cfgPath, content, 0644); err != nil {
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -753,7 +772,9 @@ enabled = true
 func TestExcludesEscapingInSaveAutoServers(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
-	os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n"), 0644)
+	if err := os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	ex := []string{"*.jar", "file with \"quotes\" and \\backslash", "logs,cache"}
 	servers := map[string]ServerConfig{
@@ -795,7 +816,9 @@ enabled = true
 enabled = true
 excludes = ["*.tmp"]
 `)
-	os.WriteFile(cfgPath, content, 0644)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	t.Setenv("MC_BACKUP_GLOBAL_EXCLUDES", "*.jar, cache")
 	t.Setenv("MC_BACKUP_SERVER_CREATIVE_EXCLUDES", "none")
@@ -831,7 +854,9 @@ listen_addr = "127.0.0.1:47990"
 [server.creative]
 enabled = true
 `)
-	os.WriteFile(cfgPath, content, 0644)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {

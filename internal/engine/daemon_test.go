@@ -16,7 +16,7 @@ func TestWarnLegacyBackupDirOnce(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "creative", "backups"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "creative", "backups", "old"), nil, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "creative", "backups", "old"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
 	d := NewDaemon(filepath.Join(root, "config.toml"), &Config{})
@@ -34,7 +34,7 @@ func TestWarnLegacyBackupDirOnce(t *testing.T) {
 func TestDiscoverSnapshotsUsesLocalDestinationRoot(t *testing.T) {
 	root := t.TempDir()
 	cfgPath := filepath.Join(root, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	watchRoot := filepath.Join(root, "watch")
@@ -65,7 +65,7 @@ func TestDiscoverSnapshotsUsesLocalDestinationRoot(t *testing.T) {
 func TestDiscoverSnapshotsSkipsEmptyLocalRootAndLegacyHistory(t *testing.T) {
 	root := t.TempDir()
 	cfgPath := filepath.Join(root, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	watchRoot := filepath.Join(root, "watch")
@@ -90,7 +90,7 @@ func TestDiscoverSnapshotsSkipsEmptyLocalRootAndLegacyHistory(t *testing.T) {
 func TestProvisionServersConcurrent(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 

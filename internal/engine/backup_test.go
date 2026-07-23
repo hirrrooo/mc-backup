@@ -257,7 +257,7 @@ func TestBackupServerUsesResolvedExcludes(t *testing.T) {
 	}
 
 	withCommandRunner(runner, func() {
-		NewBackupEngine(cfg).BackupServer(
+		_, _, _ = NewBackupEngine(cfg).BackupServer(
 			context.Background(), WatchConfig{Namespace: "mc"}, "creative",
 			ServerConfig{Target: "local", DataDir: source, Excludes: &serverExcludes}, "", "", true,
 		)

@@ -73,7 +73,7 @@ func TestWarnLegacyBackupDir(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, entry := range tt.entries {
-					if err := os.WriteFile(filepath.Join(legacy, entry), nil, 0644); err != nil {
+					if err := os.WriteFile(filepath.Join(legacy, entry), nil, 0600); err != nil {
 						t.Fatal(err)
 					}
 				}

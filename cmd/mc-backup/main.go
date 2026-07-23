@@ -171,7 +171,7 @@ func backupCmd() {
 	fs := flag.NewFlagSet("backup", flag.ExitOnError)
 	cfgPath := fs.String("config", findConfig(), "config file path")
 	offline := fs.Bool("offline", false, "backup without RCON (works when container is offline)")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
@@ -234,7 +234,7 @@ func backupCmd() {
 func postCmd(endpoint string) {
 	fs := flag.NewFlagSet(endpoint, flag.ExitOnError)
 	cfgPath := fs.String("config", findConfig(), "config file path")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
@@ -364,7 +364,7 @@ func runCmd() {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	cfgPath := fs.String("config", findConfig(), "config file path")
 	debug := fs.Bool("debug", false, "enable debug logging")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
@@ -383,7 +383,7 @@ func runCmd() {
 func statusCmd() {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	cfgPath := fs.String("config", findConfig(), "config file path")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
@@ -400,7 +400,7 @@ func statusCmd() {
 func configCmd() {
 	fs := flag.NewFlagSet("config", flag.ExitOnError)
 	cfgPath := fs.String("config", findConfig(), "config file path")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	args := fs.Args()
 	if len(args) < 1 {

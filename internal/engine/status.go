@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"text/tabwriter"
+	"time"
 
 	"log/slog"
 )
@@ -80,11 +81,11 @@ func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, tokenSupplier func(
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(jt.Snapshot())
+		_ = json.NewEncoder(w).Encode(jt.Snapshot())
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/cancel", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -97,7 +98,7 @@ func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, tokenSupplier func(
 		}
 		callbacks.OnCancel()
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("canceled"))
+		_, _ = w.Write([]byte("canceled"))
 	})
 	mux.HandleFunc("/scan", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -110,7 +111,7 @@ func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, tokenSupplier func(
 		}
 		callbacks.OnScan()
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("scan triggered"))
+		_, _ = w.Write([]byte("scan triggered"))
 	})
 	mux.HandleFunc("/backup", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -125,7 +126,7 @@ func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, tokenSupplier func(
 		offline := r.URL.Query().Get("offline") == "true"
 		callbacks.OnBackup(server, offline)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("backup triggered"))
+		_, _ = w.Write([]byte("backup triggered"))
 	})
 	return mux
 }
@@ -134,7 +135,12 @@ func startStatusServer(addr string, tokenSupplier func() string, jt *JobTracker,
 	handler := newStatusMux(jt, callbacks, tokenSupplier)
 	go func() {
 		slog.Info("status API listening", "addr", addr)
-		if err := http.ListenAndServe(addr, handler); err != nil {
+		server := &http.Server{
+			Addr:              addr,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		if err := server.ListenAndServe(); err != nil {
 			slog.Error("status API server error", "error", err)
 		}
 	}()

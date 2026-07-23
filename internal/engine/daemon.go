@@ -509,7 +509,7 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 	cfg := d.ac.Load()
 	_, newServers := discoverServersWithWarning(cfg.Watch, cfg.Servers, d.warnLegacyBackupDirOnce)
 
-	cfg = d.provisionServers(cfg, newServers)
+	_ = d.provisionServers(cfg, newServers)
 	if len(newServers) > 0 {
 		slog.Info("new servers discovered, triggering immediate backup cycle")
 		go d.runBackupCycle(ctx, "", false)

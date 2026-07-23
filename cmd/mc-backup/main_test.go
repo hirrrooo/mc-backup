@@ -103,14 +103,14 @@ func TestPrintUsageDocumentsConfigKeysAndUpdate(t *testing.T) {
 func TestVerifyChecksumSuccess(t *testing.T) {
 	body := []byte("not-a-real-binary-but-fine-for-hashing")
 	binPath := filepath.Join(t.TempDir(), "mc-backup")
-	if err := os.WriteFile(binPath, body, 0644); err != nil {
+	if err := os.WriteFile(binPath, body, 0600); err != nil {
 		t.Fatalf("write bin: %v", err)
 	}
 	sum := sha256.Sum256(body)
 	checksum := fmt.Sprintf("%x  mc-backup-linux-amd64\n", sum)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(checksum))
+		_, _ = w.Write([]byte(checksum))
 	}))
 	defer srv.Close()
 
@@ -121,11 +121,11 @@ func TestVerifyChecksumSuccess(t *testing.T) {
 
 func TestVerifyChecksumMismatch(t *testing.T) {
 	binPath := filepath.Join(t.TempDir(), "mc-backup")
-	if err := os.WriteFile(binPath, []byte("real-bytes"), 0644); err != nil {
+	if err := os.WriteFile(binPath, []byte("real-bytes"), 0600); err != nil {
 		t.Fatalf("write bin: %v", err)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("0000000000000000000000000000000000000000000000000000000000000000  mc-backup-linux-amd64\n"))
+		_, _ = w.Write([]byte("0000000000000000000000000000000000000000000000000000000000000000  mc-backup-linux-amd64\n"))
 	}))
 	defer srv.Close()
 
@@ -140,7 +140,7 @@ func TestVerifyChecksumMismatch(t *testing.T) {
 
 func TestVerifyChecksumMissingSidecar(t *testing.T) {
 	binPath := filepath.Join(t.TempDir(), "mc-backup")
-	if err := os.WriteFile(binPath, []byte("real-bytes"), 0644); err != nil {
+	if err := os.WriteFile(binPath, []byte("real-bytes"), 0600); err != nil {
 		t.Fatalf("write bin: %v", err)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -162,7 +162,7 @@ func TestCLIMutatingCommandsBearerToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedAuth = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer srv.Close()
 
@@ -173,7 +173,7 @@ func TestCLIMutatingCommandsBearerToken(t *testing.T) {
 listen_addr = "%s"
 api_token = "cli-secret-token"
 `, srv.Listener.Addr().String())
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 

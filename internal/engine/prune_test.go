@@ -13,7 +13,9 @@ func TestPruneLocalByCount(t *testing.T) {
 	tmp := t.TempDir()
 	dirs := []string{"20250611-1000", "20250611-1100", "20250611-1200", "20250611-1300", "20250611-1400"}
 	for _, d := range dirs {
-		os.Mkdir(filepath.Join(tmp, d), 0755)
+		if err := os.Mkdir(filepath.Join(tmp, d), 0755); err != nil {
+			t.Fatalf("Mkdir failed: %v", err)
+		}
 	}
 
 	pruneLocalByCount(tmp, 3)
@@ -29,7 +31,9 @@ func TestPruneLocalByCount(t *testing.T) {
 
 func TestPruneLocalByCountDisabled(t *testing.T) {
 	tmp := t.TempDir()
-	os.Mkdir(filepath.Join(tmp, "server-20250611-1000"), 0755)
+	if err := os.Mkdir(filepath.Join(tmp, "server-20250611-1000"), 0755); err != nil {
+		t.Fatalf("Mkdir failed: %v", err)
+	}
 
 	pruneLocalByCount(tmp, 0)
 
@@ -41,7 +45,9 @@ func TestPruneLocalByCountDisabled(t *testing.T) {
 
 func TestPruneLocalByCountNoMatch(t *testing.T) {
 	tmp := t.TempDir()
-	os.Mkdir(filepath.Join(tmp, "other-dir"), 0755)
+	if err := os.Mkdir(filepath.Join(tmp, "other-dir"), 0755); err != nil {
+		t.Fatalf("Mkdir failed: %v", err)
+	}
 
 	pruneLocalByCount(tmp, 2)
 
