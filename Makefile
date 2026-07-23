@@ -8,12 +8,13 @@ SERVICEDIR := /etc/systemd/system
 INSTALL_USER_HOME = $(or $(shell if [ -n "$(SUDO_USER)" ] && [ "$(SUDO_USER)" != "root" ]; then getent passwd "$(SUDO_USER)" | cut -d: -f6; else printf '%s' "$(HOME)"; fi),$(HOME))
 USER_CONFDIR = $(INSTALL_USER_HOME)/.config/mc-backup
 REPO_URL ?= https://github.com/hirrrooo/mc-backup.git
+VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 GOLANGCI_LINT_VERSION ?= v1.55.2
 
 .PHONY: build install uninstall clean lint
 
 build:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags "-X main.repoURL=$(REPO_URL)" -o $(BINARY) ./cmd/mc-backup
+	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=0 go build -ldflags "-X main.repoURL=$(REPO_URL) -X main.version=$(VERSION)" -o $(BINARY) ./cmd/mc-backup
 
 lint:
 	go run github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
