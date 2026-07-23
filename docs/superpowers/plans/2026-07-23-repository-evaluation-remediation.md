@@ -259,12 +259,19 @@ git commit -m "ci(release): add in-workflow formatting, vet, and race quality ga
 - Test: `internal/engine/command_test.go`
 - Test: `internal/engine/backup_test.go`
 
-- [ ] **Step 1: Expand command interface across mock implementers and write failing security assertion test**
+- [ ] **Step 1: Expand command interface across mock implementers, update existing TestRconCommand, and write failing security assertion test**
 
-First, update the `command` interface and all existing test mocks (`execCommand`, `fakeCommand`, `recordingCommand`) so that interface expansion compiles cleanly before running or adding tests:
+First, update the `command` interface, import `os`, and update all existing test mocks (`execCommand`, `fakeCommand`, `recordingCommand`) so that interface expansion compiles cleanly before running or adding tests:
 
 In `internal/engine/command.go`:
 ```go
+import (
+	"context"
+	"io"
+	"os"
+	"os/exec"
+)
+
 type command interface {
 	Run() error
 	Output() ([]byte, error)
@@ -291,6 +298,54 @@ func (fakeCommand) SetEnv([]string) {}
 In `internal/engine/backup_test.go`:
 ```go
 func (recordingCommand) SetEnv(_ []string) {}
+```
+
+Next, update `rconCommand` helper signature in `internal/engine/rcon.go` to accept 2 arguments (`container`, `cmd`) returning `[]string{"docker", "exec", "-e", "RCON_PASSWORD", container, "rcon-cli", cmd}`:
+
+In `internal/engine/rcon.go`:
+```go
+func rconCommand(container, cmd string) []string {
+	return []string{
+		"docker", "exec",
+		"-e", "RCON_PASSWORD",
+		container,
+		"rcon-cli",
+		cmd,
+	}
+}
+```
+
+Update existing `TestRconCommand` in `internal/engine/rcon_test.go` to assert the new 2-argument argv structure (contains `-e`, `RCON_PASSWORD` name only, container, `rcon-cli`, command, and does NOT contain password values):
+
+In `internal/engine/rcon_test.go`:
+```go
+func TestRconCommand(t *testing.T) {
+	cmd := rconCommand("mc-server", "save-off")
+	if len(cmd) < 6 {
+		t.Fatal("cmd too short")
+	}
+	if cmd[0] != "docker" || cmd[1] != "exec" {
+		t.Errorf("expected docker exec, got %q %q", cmd[0], cmd[1])
+	}
+	if cmd[2] != "-e" || cmd[3] != "RCON_PASSWORD" {
+		t.Errorf("expected -e RCON_PASSWORD, got %q %q", cmd[2], cmd[3])
+	}
+	foundContainer := false
+	for _, arg := range cmd {
+		if arg == "mc-server" {
+			foundContainer = true
+		}
+		if strings.Contains(arg, "hunter2") || strings.Contains(arg, "SecretPass") {
+			t.Errorf("argv must not contain password value, got: %s", arg)
+		}
+	}
+	if !foundContainer {
+		t.Error("missing container name in args")
+	}
+	if cmd[len(cmd)-1] != "save-off" || cmd[len(cmd)-2] != "rcon-cli" {
+		t.Errorf("expected rcon-cli save-off at end, got %q %q", cmd[len(cmd)-2], cmd[len(cmd)-1])
+	}
+}
 ```
 
 Next, write the failing security assertion test in `internal/engine/rcon_test.go`:
@@ -357,8 +412,8 @@ func TestExecRconOmitsPasswordFromArgv(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify security assertion failure**
 
-Run: `go test -v ./internal/engine -run TestExecRconOmitsPasswordFromArgv`
-Expected: FAIL on security assertions (RCON password present in command arguments and absent from `lastEnv`).
+Run: `go test -v ./internal/engine -run "TestRconCommand|TestExecRconOmitsPasswordFromArgv"`
+Expected: Compile succeeds. `TestRconCommand` PASSES. `TestExecRconOmitsPasswordFromArgv` FAILS on security assertion because `runRcon` has not yet injected environment via `cmd.SetEnv`.
 
 - [ ] **Step 3: Update `rcon.go` to support environment injection**
 
@@ -410,7 +465,7 @@ func rconOutput(ctx context.Context, container, password, command string) (strin
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test -v ./internal/engine -run TestExecRconOmitsPasswordFromArgv`
+Run: `go test -v ./internal/engine -run "TestRconCommand|TestExecRconOmitsPasswordFromArgv"`
 Expected: PASS.
 
 - [ ] **Step 5: Commit Phase 2 Task 7**
@@ -542,7 +597,23 @@ Expected: FAIL due to missing `APIToken` field, `ValidateConfig` call in `LoadCo
 - [ ] **Step 3: Implement `APIToken` field, `setGlobalField`/`getGlobalField` handlers, `LoadConfig` validation, auth middleware, and CLI header propagation**
 
 In `internal/engine/config.go`:
+Add `"net"` to imports (required for `net.SplitHostPort` and `net.ParseIP` in `isLoopback`):
 ```go
+import (
+	"fmt"
+	"log/slog"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/BurntSushi/toml"
+	"github.com/fsnotify/fsnotify"
+)
+
 type GlobalConfig struct {
 	ListenAddr     string   `toml:"listen_addr"`
 	APIToken       string   `toml:"api_token"`
@@ -1468,7 +1539,7 @@ func TestValidateConfigMissingNASFields(t *testing.T) {
 Run: `go test -v ./internal/engine -run TestValidateConfigMissingNASFields`
 Expected: FAIL due to missing validation checks for NAS target configuration.
 
-- [ ] **Step 3: Update `ValidateConfig` and `README.md`**
+- [ ] **Step 3: Update `ValidateConfig`, existing test fixtures in `config_test.go`, and `README.md`**
 
 In `internal/engine/config.go`:
 ```go
@@ -1514,12 +1585,46 @@ func LoadConfig(path string) (*Config, error) {
 }
 ```
 
+In `internal/engine/config_test.go`, update existing test fixtures that call `LoadConfig`/`SetConfigValue` with implicit NAS targets to satisfy `ValidateConfig`:
+
+1. `TestEnvOverrideCaseInsensitiveServerName`: update fixture to set explicit local target and local destination:
+   ```go
+   content := []byte("[local]\ndest_root = \"/tmp\"\n\n[server.Creative]\nenabled = false\ntarget = \"local\"\nrcon_password = \"filepass\"\n")
+   ```
+
+2. `TestSaveConfig`: update fixture to include required NAS fields (`ssh_user`, `dest_root` alongside `ssh_host`):
+   ```go
+   content := []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n\n[nas]\nssh_user = \"backup\"\nssh_host = \"nas.local\"\ndest_root = \"/volume1/backups\"\n")
+   ```
+
+3. `TestEnvOverrideServerNameWithUnderscore`: update fixture to set explicit local target and local destination:
+   ```go
+   content := []byte("[local]\ndest_root = \"/tmp\"\n\n[server.my_creative]\nenabled = true\ntarget = \"local\"\nrcon_password = \"filepass\"\n")
+   ```
+
+4. `TestSetConfigValueDoesNotDuplicateAutoServers`: update main config fixture to include `[local]\ndest_root = "/tmp"\n` and auto server fixture to include `target = "local"`:
+   ```go
+   os.WriteFile(cfgPath, []byte("[global]\nmax_mbps = 40.0\n[local]\ndest_root = \"/tmp\"\n"), 0644)
+   os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"secret\"\n"), 0644)
+   ```
+
+5. `TestSetConfigValueUpdatesAutoServerInAutoFile`: update main config fixture to include `[local]\ndest_root = "/tmp"\n` and auto server fixture to include `target = "local"`:
+   ```go
+   os.WriteFile(cfgPath, []byte("[global]\n[local]\ndest_root = \"/tmp\"\n"), 0644)
+   os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"old\"\n"), 0644)
+   ```
+
+6. `TestSaveAutoServersAtomicRoundTrip`: update main config fixture to include valid NAS fields:
+   ```go
+   os.WriteFile(cfgPath, []byte("[global]\n\n[nas]\nssh_user = \"backup\"\nssh_host = \"nas.local\"\ndest_root = \"/volume1/backups\"\n"), 0644)
+   ```
+
 In `README.md`:
 Document that `mc-backup update` requires elevated permissions (`sudo systemctl` and `sudo mv`) to restart the daemon service and overwrite the binary.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test -v ./internal/engine -run TestValidateConfigMissingNASFields`
+Run: `go test -v ./internal/engine -run "TestValidateConfigMissingNASFields|TestParseConfig|TestEnvOverrideCaseInsensitiveServerName|TestSaveConfig|TestEnvOverrideServerNameWithUnderscore|TestSetConfigValueDoesNotDuplicateAutoServers|TestSetConfigValueUpdatesAutoServerInAutoFile|TestSaveAutoServersAtomicRoundTrip"` and `go test -v ./internal/engine/...`
 Expected: PASS.
 
 - [ ] **Step 5: Commit Phase 5 Task 18**
