@@ -407,6 +407,67 @@ func TestSaveAutoServersEmptyRemovesFile(t *testing.T) {
 	}
 }
 
+func TestSaveAutoServersPermissions(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+
+	if err := os.WriteFile(cfgPath, []byte("[global]\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	servers := map[string]ServerConfig{
+		"creative": {
+			Enabled:       true,
+			ContainerName: "creative-mc-1",
+			RconPassword:  "secret",
+		},
+	}
+
+	// Initial creation check
+	if err := SaveAutoServers(cfgPath, servers); err != nil {
+		t.Fatalf("SaveAutoServers creation failed: %v", err)
+	}
+
+	info, err := os.Stat(autoPath)
+	if err != nil {
+		t.Fatalf("stat auto file: %v", err)
+	}
+
+	if perm := info.Mode().Perm(); perm&0077 != 0 {
+		t.Errorf("created auto file permissions = %04o, want no group/other bits (perm & 0077 == 0)", perm)
+	}
+
+	// Pre-create auto file with permissive mode (0666) to test that replacement resets permissions
+	if err := os.WriteFile(autoPath, []byte("loose permissions file"), 0666); err != nil {
+		t.Fatalf("pre-write auto file: %v", err)
+	}
+
+	if err := SaveAutoServers(cfgPath, servers); err != nil {
+		t.Fatalf("SaveAutoServers replacement failed: %v", err)
+	}
+
+	info, err = os.Stat(autoPath)
+	if err != nil {
+		t.Fatalf("stat auto file after replace: %v", err)
+	}
+
+	if perm := info.Mode().Perm(); perm&0077 != 0 {
+		t.Errorf("replaced auto file permissions = %04o, want no group/other bits (perm & 0077 == 0)", perm)
+	}
+
+	// Verify atomic write behavior (no leftover .tmp files)
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("leftover temp file: %s", e.Name())
+		}
+	}
+}
+
 func TestAPITokenConfig(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
