@@ -256,10 +256,44 @@ git commit -m "ci(release): add in-workflow formatting, vet, and race quality ga
 - Modify: `internal/engine/command.go`
 - Modify: `internal/engine/rcon.go`
 - Test: `internal/engine/rcon_test.go`
+- Test: `internal/engine/command_test.go`
+- Test: `internal/engine/backup_test.go`
 
-- [ ] **Step 1: Write failing test verifying RCON password is omitted from argv and passed via Env**
+- [ ] **Step 1: Expand command interface across mock implementers and write failing security assertion test**
 
-In `internal/engine/rcon_test.go`:
+First, update the `command` interface and all existing test mocks (`execCommand`, `fakeCommand`, `recordingCommand`) so that interface expansion compiles cleanly before running or adding tests:
+
+In `internal/engine/command.go`:
+```go
+type command interface {
+	Run() error
+	Output() ([]byte, error)
+	CombinedOutput() ([]byte, error)
+	SetStdout(io.Writer)
+	SetStderr(io.Writer)
+	SetEnv([]string)
+}
+
+func (c execCommand) SetEnv(env []string) {
+	if len(c.cmd.Env) == 0 {
+		c.cmd.Env = append(os.Environ(), env...)
+	} else {
+		c.cmd.Env = append(c.cmd.Env, env...)
+	}
+}
+```
+
+In `internal/engine/command_test.go`:
+```go
+func (fakeCommand) SetEnv([]string) {}
+```
+
+In `internal/engine/backup_test.go`:
+```go
+func (recordingCommand) SetEnv(_ []string) {}
+```
+
+Next, write the failing security assertion test in `internal/engine/rcon_test.go`:
 ```go
 package engine
 
@@ -284,11 +318,11 @@ type captureCommand struct {
 	runner *captureEnvRunner
 }
 
-func (c *captureCommand) Run() error { return nil }
-func (c *captureCommand) Output() ([]byte, error) { return []byte("ok"), nil }
+func (c *captureCommand) Run() error                      { return nil }
+func (c *captureCommand) Output() ([]byte, error)         { return []byte("ok"), nil }
 func (c *captureCommand) CombinedOutput() ([]byte, error) { return []byte("ok"), nil }
-func (c *captureCommand) SetStdout(w io.Writer) {}
-func (c *captureCommand) SetStderr(w io.Writer) {}
+func (c *captureCommand) SetStdout(w io.Writer)           {}
+func (c *captureCommand) SetStderr(w io.Writer)           {}
 func (c *captureCommand) SetEnv(env []string) {
 	c.runner.lastEnv = env
 }
@@ -321,32 +355,12 @@ func TestExecRconOmitsPasswordFromArgv(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify security assertion failure**
 
 Run: `go test -v ./internal/engine -run TestExecRconOmitsPasswordFromArgv`
-Expected: FAIL due to password being present in `runner.lastArgs` or `SetEnv` method missing on `command`.
+Expected: FAIL on security assertions (RCON password present in command arguments and absent from `lastEnv`).
 
-- [ ] **Step 3: Update `command.go`, `rcon.go` to support environment injection**
-
-In `internal/engine/command.go`:
-```go
-type command interface {
-	Run() error
-	Output() ([]byte, error)
-	CombinedOutput() ([]byte, error)
-	SetStdout(io.Writer)
-	SetStderr(io.Writer)
-	SetEnv([]string)
-}
-
-func (c execCommand) SetEnv(env []string) {
-	if len(c.cmd.Env) == 0 {
-		c.cmd.Env = append(os.Environ(), env...)
-	} else {
-		c.cmd.Env = append(c.cmd.Env, env...)
-	}
-}
-```
+- [ ] **Step 3: Update `rcon.go` to support environment injection**
 
 In `internal/engine/rcon.go`:
 ```go
@@ -402,7 +416,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit Phase 2 Task 7**
 
 ```bash
-git add internal/engine/command.go internal/engine/rcon.go internal/engine/rcon_test.go
+git add internal/engine/command.go internal/engine/rcon.go internal/engine/rcon_test.go internal/engine/command_test.go internal/engine/backup_test.go
 git commit -m "fix(security): pass RCON_PASSWORD via child process environment instead of command line arguments"
 ```
 
@@ -420,7 +434,7 @@ git commit -m "fix(security): pass RCON_PASSWORD via child process environment i
 - Test: `internal/engine/status_test.go`
 - Test: `internal/engine/config_test.go`
 
-- [ ] **Step 1: Write failing tests for Status API authentication and bind validation**
+- [ ] **Step 1: Write failing tests for Status API authentication, bind validation, and API token env/CLI config**
 
 In `internal/engine/config_test.go`:
 ```go
@@ -451,6 +465,22 @@ api_token = ""
 	_, err := LoadConfig(cfgPath)
 	if err == nil || !strings.Contains(err.Error(), "invalid config:") {
 		t.Fatalf("expected LoadConfig to return invalid config error, got: %v", err)
+	}
+}
+
+func TestAPITokenEnvAndConfigGetSet(t *testing.T) {
+	// Test env override MC_BACKUP_GLOBAL_API_TOKEN
+	t.Setenv("MC_BACKUP_GLOBAL_API_TOKEN", "env-secret-token")
+	cfg := &Config{}
+	applyEnvOverrides(cfg)
+	if cfg.Global.APIToken != "env-secret-token" {
+		t.Errorf("expected env-secret-token from env override, got %q", cfg.Global.APIToken)
+	}
+
+	// Test GetConfigValue and SetConfigValue for global.api_token
+	cfg.Global.APIToken = "my-token"
+	if val := GetConfigValue(cfg, "global.api_token"); val != "my-token" {
+		t.Errorf("expected my-token from GetConfigValue, got %q", val)
 	}
 }
 ```
@@ -506,10 +536,10 @@ func TestStatusAPIAuth(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test -v ./internal/engine -run "TestNonLoopbackBindWithoutTokenFailsValidation|TestLoadConfigValidationIntegration|TestStatusAPIAuth"`
-Expected: FAIL due to missing `APIToken` field, `ValidateConfig` call in `LoadConfig`, and `newStatusMux`/`requireAuth` implementations.
+Run: `go test -v ./internal/engine -run "TestNonLoopbackBindWithoutTokenFailsValidation|TestLoadConfigValidationIntegration|TestAPITokenEnvAndConfigGetSet|TestStatusAPIAuth"`
+Expected: FAIL due to missing `APIToken` field, `ValidateConfig` call in `LoadConfig`, `setGlobalField`/`getGlobalField` `api_token` handling, and `newStatusMux`/`requireAuth` implementations.
 
-- [ ] **Step 3: Implement `APIToken` field, `LoadConfig` validation, auth middleware, and CLI header propagation**
+- [ ] **Step 3: Implement `APIToken` field, `setGlobalField`/`getGlobalField` handlers, `LoadConfig` validation, auth middleware, and CLI header propagation**
 
 In `internal/engine/config.go`:
 ```go
@@ -519,6 +549,31 @@ type GlobalConfig struct {
 	BackupInterval Duration `toml:"backup_interval"`
 	InitialDelay   Duration `toml:"initial_delay"`
 	MaxMBps        float64  `toml:"max_mbps"`
+}
+
+func setGlobalField(v *GlobalConfig, key, val string) {
+	switch key {
+	case "listen_addr":
+		v.ListenAddr = val
+	case "api_token":
+		v.APIToken = val
+	case "max_mbps":
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			v.MaxMBps = f
+		}
+	// ...
+	}
+}
+
+func getGlobalField(g GlobalConfig, key string) string {
+	switch key {
+	case "listen_addr":
+		return g.ListenAddr
+	case "api_token":
+		return g.APIToken
+	// ...
+	}
+	return ""
 }
 
 func isLoopback(addr string) bool {
@@ -727,10 +782,40 @@ git commit -m "test(config): verify restricted permissions on auto-provisioned c
 - Test: `internal/engine/config_test.go`
 - Test: `internal/engine/backup_test.go`
 
-- [ ] **Step 1: Write failing tests for global and per-server excludes resolution, TOML round-trip, env overrides, CLI get/set, and rsync argument construction**
+- [ ] **Step 1: Write failing tests for global and per-server excludes resolution, TOML helper escaping, env overrides, CLI get/set, and rsync argument construction**
 
 In `internal/engine/config_test.go` and `internal/engine/backup_test.go`:
 ```go
+func TestSplitCommaListAndFormatTOMLSlice(t *testing.T) {
+	// splitCommaList
+	if res := splitCommaList("  a, b,  c "); len(res) != 3 || res[0] != "a" || res[1] != "b" || res[2] != "c" {
+		t.Errorf("splitCommaList failure: %v", res)
+	}
+	if res := splitCommaList(" "); res != nil {
+		t.Errorf("expected nil for empty/whitespace string, got: %v", res)
+	}
+
+	// formatTOMLSlice with special characters (quotes, backslashes, whitespace)
+	s1 := []string{"*.jar", "cache/logs", "file with \"quotes\" & \\slashes"}
+	tomlStr := formatTOMLSlice(s1)
+	if tomlStr == "" {
+		t.Fatal("expected non-empty TOML slice string")
+	}
+	var parsed struct {
+		Excludes []string `toml:"excludes"`
+	}
+	if _, err := toml.Decode("excludes = "+tomlStr, &parsed); err != nil {
+		t.Fatalf("failed to decode formatted TOML slice %q: %v", tomlStr, err)
+	}
+	if len(parsed.Excludes) != 3 || parsed.Excludes[2] != s1[2] {
+		t.Errorf("TOML round-trip mismatch: got %v, want %v", parsed.Excludes, s1)
+	}
+
+	if emptyStr := formatTOMLSlice(nil); emptyStr != "[]" {
+		t.Errorf("expected '[]' for nil slice, got %q", emptyStr)
+	}
+}
+
 func TestResolveExcludesNilFallbackAndExplicitEmpty(t *testing.T) {
 	global := GlobalConfig{
 		Excludes: []string{"*.jar", "cache", "logs", "*.tmp"},
@@ -794,27 +879,78 @@ excludes = []
 		t.Errorf("expected non-nil empty excludes for server creative, got: %v", srv.Excludes)
 	}
 
-	// Verify CLI Get/Set
+	// Verify CLI Get display semantics (<inherited> for nil, "" for empty slice, comma string for list)
 	val := GetConfigValue(cfg, "global.excludes")
 	if val != "*.tmp,cache" {
 		t.Errorf("expected '*.tmp,cache', got %q", val)
 	}
 	valSrv := GetConfigValue(cfg, "server.creative.excludes")
 	if valSrv != "" {
-		t.Errorf("expected empty string for empty slice, got %q", valSrv)
+		t.Errorf("expected empty string for explicit empty slice, got %q", valSrv)
+	}
+	valInherited := GetConfigValue(cfg, "server.survival.excludes")
+	if valInherited != "<inherited>" {
+		t.Errorf("expected '<inherited>' for nil server excludes, got %q", valInherited)
+	}
+
+	// Verify env overrides for global and server excludes
+	t.Setenv("MC_BACKUP_GLOBAL_EXCLUDES", "env_glob_1,env_glob_2")
+	t.Setenv("MC_BACKUP_SERVER_CREATIVE_EXCLUDES", "env_srv_1")
+	applyEnvOverrides(cfg)
+	if len(cfg.Global.Excludes) != 2 || cfg.Global.Excludes[0] != "env_glob_1" {
+		t.Errorf("expected global env override, got %v", cfg.Global.Excludes)
+	}
+	if srv := cfg.Servers["creative"]; srv.Excludes == nil || len(*srv.Excludes) != 1 || (*srv.Excludes)[0] != "env_srv_1" {
+		t.Errorf("expected server env override, got %v", srv.Excludes)
 	}
 }
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test -v ./internal/engine -run "TestResolveExcludesNilFallbackAndExplicitEmpty|TestLocalRsyncArgsExcludes|TestConfigExcludesTOMLAndEnvOverrides"`
-Expected: FAIL due to missing `Excludes` fields and resolution helper.
+Run: `go test -v ./internal/engine -run "TestSplitCommaListAndFormatTOMLSlice|TestResolveExcludesNilFallbackAndExplicitEmpty|TestLocalRsyncArgsExcludes|TestConfigExcludesTOMLAndEnvOverrides"`
+Expected: FAIL due to missing helper functions, `Excludes` struct fields, and get/set handlers.
 
-- [ ] **Step 3: Implement `Excludes` fields, resolution logic using `server.Excludes == nil`, `SaveAutoServers` output, env overrides, CLI get/set, and argument propagation**
+- [ ] **Step 3: Implement TOML helpers, struct fields, resolution logic, env override mapping, CLI get/set display semantics, and argument propagation**
 
 In `internal/engine/config.go`:
 ```go
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+func splitCommaList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	res := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			res = append(res, p)
+		}
+	}
+	return res
+}
+
+func formatTOMLSlice(slice []string) string {
+	if len(slice) == 0 {
+		return "[]"
+	}
+	buf, err := json.Marshal(slice)
+	if err != nil {
+		items := make([]string, len(slice))
+		for i, s := range slice {
+			items[i] = fmt.Sprintf("%q", s)
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	}
+	return string(buf)
+}
+
 type GlobalConfig struct {
 	ListenAddr     string   `toml:"listen_addr"`
 	APIToken       string   `toml:"api_token"`
@@ -847,33 +983,77 @@ func resolveExcludes(global GlobalConfig, server ServerConfig) []string {
 }
 ```
 
-Update `serverFieldKeys` in `internal/engine/config.go` to include `"excludes"`.
-
-In `setGlobalField`:
+Update `serverFieldKeys` in `internal/engine/config.go`:
 ```go
-case "excludes":
-	if val == "" {
-		v.Excludes = nil
-	} else {
+var serverFieldKeys = []string{
+	"enabled",
+	"target",
+	"container_name",
+	"rcon_password",
+	"data_dir",
+	"pause_if_no_players",
+	"excludes",
+}
+```
+
+In `setGlobalField` and `getGlobalField` (`internal/engine/config.go`):
+```go
+func setGlobalField(v *GlobalConfig, key, val string) {
+	switch key {
+	case "listen_addr":
+		v.ListenAddr = val
+	case "api_token":
+		v.APIToken = val
+	case "excludes":
 		v.Excludes = splitCommaList(val)
+	// ...
 	}
+}
+
+func getGlobalField(g GlobalConfig, key string) string {
+	switch key {
+	case "listen_addr":
+		return g.ListenAddr
+	case "api_token":
+		return g.APIToken
+	case "excludes":
+		return strings.Join(g.Excludes, ",")
+	// ...
+	}
+	return ""
+}
 ```
 
-In `setServerField`:
+In `setServerField` and `getServerFieldStr` (`internal/engine/config.go`):
 ```go
-case "excludes":
-	if val == "" || strings.EqualFold(val, "none") {
-		empty := []string{}
-		s.Excludes = &empty
-	} else {
-		list := splitCommaList(val)
-		s.Excludes = &list
+func setServerField(s *ServerConfig, key, val string) {
+	switch key {
+	// ...
+	case "excludes":
+		if val == "" || strings.EqualFold(val, "none") {
+			empty := []string{}
+			s.Excludes = &empty
+		} else if strings.EqualFold(val, "inherit") || strings.EqualFold(val, "default") {
+			s.Excludes = nil
+		} else {
+			list := splitCommaList(val)
+			s.Excludes = &list
+		}
 	}
-```
+}
 
-In `GetConfigValue` / `getGlobalField` / `getServerFieldStr`:
-- `global.excludes` returns comma-joined string.
-- `server.<name>.excludes` returns comma-joined string if non-nil, or `"<inherited>"` if nil.
+func getServerFieldStr(s ServerConfig, key string) string {
+	switch key {
+	// ...
+	case "excludes":
+		if s.Excludes == nil {
+			return "<inherited>"
+		}
+		return strings.Join(*s.Excludes, ",")
+	}
+	return ""
+}
+```
 
 In `SaveAutoServers`:
 ```go
@@ -890,7 +1070,7 @@ Document `excludes` under `[global]` and `[server.<name>]`, env overrides (`MC_B
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test -v ./internal/engine -run "TestResolveExcludesNilFallbackAndExplicitEmpty|TestLocalRsyncArgsExcludes|TestConfigExcludesTOMLAndEnvOverrides"`
+Run: `go test -v ./internal/engine -run "TestSplitCommaListAndFormatTOMLSlice|TestResolveExcludesNilFallbackAndExplicitEmpty|TestLocalRsyncArgsExcludes|TestConfigExcludesTOMLAndEnvOverrides"`
 Expected: PASS.
 
 - [ ] **Step 5: Commit Phase 3 Task 10**
