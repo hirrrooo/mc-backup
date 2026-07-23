@@ -4,6 +4,9 @@ name: CI
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Build, Lint, and Test
@@ -19,9 +22,9 @@ jobs:
 
       - name: Check formatting
         run: |
-          if [ -n "$(gofmt -l internal cmd)" ]; then
+          if [ -n "$(gofmt -l .)" ]; then
             echo "The following files are not formatted properly:"
-            gofmt -l internal cmd
+            gofmt -l .
             exit 1
           fi
 
