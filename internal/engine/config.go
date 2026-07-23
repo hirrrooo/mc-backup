@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -156,6 +157,9 @@ func normalizeTarget(t string) string {
 func (c *Config) Validate() error {
 	if c.Global.ListenAddr == "" {
 		return fmt.Errorf("invalid config: global.listen_addr is required")
+	}
+	if math.IsNaN(c.Global.MaxMBps) || math.IsInf(c.Global.MaxMBps, 0) || c.Global.MaxMBps < 0 {
+		return fmt.Errorf("invalid config: global.max_mbps must be a non-negative finite number")
 	}
 	if c.Global.BackupInterval.Duration <= 0 {
 		return fmt.Errorf("invalid config: global.backup_interval must be greater than 0")
@@ -649,7 +653,7 @@ func setGlobalField(v *GlobalConfig, key, val string) error {
 		v.APIToken = val
 	case "max_mbps":
 		f, err := strconv.ParseFloat(val, 64)
-		if err != nil || f < 0 {
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
 			return fmt.Errorf("invalid max_mbps: %q", val)
 		}
 		v.MaxMBps = f

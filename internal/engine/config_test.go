@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2014,6 +2015,92 @@ func TestSaveSplitNormalizesAutoServerNames(t *testing.T) {
 	if s, ok := cfg.Servers["creative"]; !ok || s.RconPassword != "secret" {
 		t.Fatalf("auto server creative not loaded correctly from sidecar: %#v", s)
 	}
+}
+
+func TestNonFiniteAndNegativeMaxMBpsValidation(t *testing.T) {
+	validCfg := func() *Config {
+		cfg := DefaultConfig()
+		cfg.Global.MaxMBps = 40.0
+		return cfg
+	}
+
+	t.Run("Validate rejects NaN, +Inf, -Inf, and negative", func(t *testing.T) {
+		invalidValues := []float64{
+			math.NaN(),
+			math.Inf(1),
+			math.Inf(-1),
+			-5.0,
+		}
+		for _, val := range invalidValues {
+			cfg := validCfg()
+			cfg.Global.MaxMBps = val
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "max_mbps") {
+				t.Errorf("Validate(%v) expected error containing 'max_mbps', got: %v", val, err)
+			}
+		}
+
+		// 0.0 and positive finite are valid
+		for _, val := range []float64{0.0, 100.0} {
+			cfg := validCfg()
+			cfg.Global.MaxMBps = val
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate(%v) expected valid, got: %v", val, err)
+			}
+		}
+	})
+
+	t.Run("LoadConfig TOML rejects NaN, Inf, and negative", func(t *testing.T) {
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "config.toml")
+
+		invalidTOMLs := []string{
+			"[global]\nlisten_addr = \"127.0.0.1:47990\"\nmax_mbps = nan\n",
+			"[global]\nlisten_addr = \"127.0.0.1:47990\"\nmax_mbps = inf\n",
+			"[global]\nlisten_addr = \"127.0.0.1:47990\"\nmax_mbps = -inf\n",
+			"[global]\nlisten_addr = \"127.0.0.1:47990\"\nmax_mbps = -10.0\n",
+		}
+		for _, content := range invalidTOMLs {
+			if err := os.WriteFile(cfgPath, []byte(content), 0600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			if _, err := LoadConfig(cfgPath); err == nil || !strings.Contains(err.Error(), "max_mbps") {
+				t.Errorf("LoadConfig for TOML %q expected error containing 'max_mbps', got: %v", content, err)
+			}
+		}
+
+		// 0.0 is valid
+		if err := os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\nmax_mbps = 0.0\n"), 0600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if cfg, err := LoadConfig(cfgPath); err != nil {
+			t.Errorf("LoadConfig 0.0 max_mbps expected valid, got: %v", err)
+		} else if cfg.Global.MaxMBps != 0.0 {
+			t.Errorf("expected 0.0 max_mbps, got %v", cfg.Global.MaxMBps)
+		}
+	})
+
+	t.Run("SetConfigValue rejects NaN, +Inf, -Inf, and negative", func(t *testing.T) {
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "config.toml")
+		if err := os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n"), 0600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		invalidInputs := []string{"nan", "NaN", "+inf", "-inf", "inf", "-5.0"}
+		for _, input := range invalidInputs {
+			if err := SetConfigValue(cfgPath, "global.max_mbps", input); err == nil {
+				t.Errorf("SetConfigValue global.max_mbps %q expected error, got nil", input)
+			}
+		}
+
+		// 0 and positive finite are valid
+		if err := SetConfigValue(cfgPath, "global.max_mbps", "0"); err != nil {
+			t.Errorf("SetConfigValue global.max_mbps 0 unexpected error: %v", err)
+		}
+		if err := SetConfigValue(cfgPath, "global.max_mbps", "100.5"); err != nil {
+			t.Errorf("SetConfigValue global.max_mbps 100.5 unexpected error: %v", err)
+		}
+	})
 }
 
 func TestDurationMarshalUnmarshal(t *testing.T) {
