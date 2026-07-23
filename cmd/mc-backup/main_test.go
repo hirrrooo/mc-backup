@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -194,4 +195,80 @@ api_token = "cli-secret-token"
 	if receivedAuth != "Bearer cli-secret-token" {
 		t.Errorf("backup CLI command auth header = %q, want %q", receivedAuth, "Bearer cli-secret-token")
 	}
+}
+
+type chunkReader struct {
+	data      []byte
+	chunkSize int
+	pos       int
+}
+
+func (c *chunkReader) Read(p []byte) (int, error) {
+	if c.pos >= len(c.data) {
+		return 0, io.EOF
+	}
+	n := c.chunkSize
+	if len(c.data)-c.pos < n {
+		n = len(c.data) - c.pos
+	}
+	if len(p) < n {
+		n = len(p)
+	}
+	copy(p[:n], c.data[c.pos:c.pos+n])
+	c.pos += n
+	return n, nil
+}
+
+type errTestReader struct{}
+
+func (e *errTestReader) Read(p []byte) (int, error) {
+	return 0, fmt.Errorf("underlying read error")
+}
+
+func TestReadResponseBody(t *testing.T) {
+	t.Run("chunked short reads combine full response > 64 bytes", func(t *testing.T) {
+		data := bytes.Repeat([]byte("a"), 100) // 100 bytes > 64
+		cr := &chunkReader{data: data, chunkSize: 10}
+		body, err := readResponseBody(cr)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(body, data) {
+			t.Fatalf("readResponseBody len = %d, want %d", len(body), len(data))
+		}
+	})
+
+	t.Run("exactly cap succeeds", func(t *testing.T) {
+		data := make([]byte, maxResponseBodyBytes)
+		cr := &chunkReader{data: data, chunkSize: 64 * 1024}
+		body, err := readResponseBody(cr)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(body) != maxResponseBodyBytes {
+			t.Fatalf("readResponseBody len = %d, want %d", len(body), maxResponseBodyBytes)
+		}
+	})
+
+	t.Run("cap plus one fails", func(t *testing.T) {
+		data := make([]byte, maxResponseBodyBytes+1)
+		cr := &chunkReader{data: data, chunkSize: 64 * 1024}
+		_, err := readResponseBody(cr)
+		if err == nil {
+			t.Fatal("expected error when body exceeds cap, got nil")
+		}
+		if !strings.Contains(err.Error(), "exceed") {
+			t.Fatalf("expected error containing 'exceed', got %v", err)
+		}
+	})
+
+	t.Run("underlying read error propagates", func(t *testing.T) {
+		_, err := readResponseBody(&errTestReader{})
+		if err == nil {
+			t.Fatal("expected error from underlying reader, got nil")
+		}
+		if !strings.Contains(err.Error(), "underlying read error") {
+			t.Fatalf("expected 'underlying read error', got %v", err)
+		}
+	})
 }

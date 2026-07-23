@@ -154,6 +154,19 @@ func main() {
 	}
 }
 
+const maxResponseBodyBytes = 1024 * 1024 // 1 MiB
+
+func readResponseBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, int64(maxResponseBodyBytes)+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+	if len(body) > maxResponseBodyBytes {
+		return nil, fmt.Errorf("response body exceeded limit of %d bytes", maxResponseBodyBytes)
+	}
+	return body, nil
+}
+
 func backupCmd() {
 	fs := flag.NewFlagSet("backup", flag.ExitOnError)
 	cfgPath := fs.String("config", findConfig(), "config file path")
@@ -203,9 +216,12 @@ func backupCmd() {
 
 	switch {
 	case resp.StatusCode == http.StatusOK:
-		var buf [64]byte
-		n, _ := resp.Body.Read(buf[:])
-		fmt.Printf("backup: %s\n", buf[:n])
+		body, err := readResponseBody(resp.Body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backup: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("backup: %s\n", body)
 	case resp.StatusCode == http.StatusUnauthorized:
 		fmt.Fprintf(os.Stderr, "backup: unauthorized (check global.api_token)\n")
 		os.Exit(1)
@@ -244,9 +260,12 @@ func postCmd(endpoint string) {
 
 	switch {
 	case resp.StatusCode == http.StatusOK:
-		var buf [64]byte
-		n, _ := resp.Body.Read(buf[:])
-		fmt.Printf("%s: %s\n", endpoint, buf[:n])
+		body, err := readResponseBody(resp.Body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", endpoint, err)
+			os.Exit(1)
+		}
+		fmt.Printf("%s: %s\n", endpoint, body)
 	case resp.StatusCode == http.StatusUnauthorized:
 		fmt.Fprintf(os.Stderr, "%s: unauthorized (check global.api_token)\n", endpoint)
 		os.Exit(1)
