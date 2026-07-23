@@ -599,7 +599,7 @@ func GetConfigValue(cfg *Config, key string) string {
 		if len(parts) < 3 {
 			return ""
 		}
-		serverName := parts[1]
+		serverName := strings.ToLower(parts[1])
 		field := parts[2]
 		if s, ok := cfg.Servers[serverName]; ok {
 			return getServerFieldStr(s, field)

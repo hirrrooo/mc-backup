@@ -884,3 +884,26 @@ enabled = true
 		t.Errorf("GetConfigValue creative after inherit = %q, want %q", got, "inherit")
 	}
 }
+
+func TestGetConfigValueNormalizesServerName(t *testing.T) {
+	ex := []string{"*.tmp"}
+	cfg := &Config{
+		Servers: map[string]ServerConfig{
+			"creative": {
+				Enabled:  true,
+				Target:   "local",
+				Excludes: &ex,
+			},
+		},
+	}
+
+	if got := GetConfigValue(cfg, "server.Creative.excludes"); got != "*.tmp" {
+		t.Errorf("GetConfigValue server.Creative.excludes = %q, want %q", got, "*.tmp")
+	}
+	if got := GetConfigValue(cfg, "server.Creative.target"); got != "local" {
+		t.Errorf("GetConfigValue server.Creative.target = %q, want %q", got, "local")
+	}
+	if got := GetConfigValue(cfg, "server.Creative.enabled"); got != "true" {
+		t.Errorf("GetConfigValue server.Creative.enabled = %q, want %q", got, "true")
+	}
+}
