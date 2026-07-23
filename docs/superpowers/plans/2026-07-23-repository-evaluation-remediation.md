@@ -26,15 +26,18 @@
 ### Task 1: Untrack and Clean Python Virtualenv and Scratch File (Eval 0.1, 0.2)
 
 **Files:**
-- Modify: `.gitignore:1-10`
+- Modify: `.gitignore`
 - Remove untracked/staged: `venv/`, `test_tz.go`
+- Preserve working files: `docs/repo-evaluation-2026-07-23.md`, `docs/superpowers/specs/2026-07-21-local-backup-target-design.md`
 
 - [ ] **Step 1: Check git tracking status of `venv/` and `test_tz.go`**
 
 Run: `git ls-files venv test_tz.go`
 Expected: Lists any tracked files in `venv/` or `test_tz.go`.
 
-- [ ] **Step 2: Remove untracked/staged `venv` and `test_tz.go` and update `.gitignore`**
+- [ ] **Step 2: Remove untracked/staged `venv/` and `test_tz.go` and update `.gitignore`**
+
+Explicitly preserve `docs/repo-evaluation-2026-07-23.md` and modified `docs/superpowers/specs/2026-07-21-local-backup-target-design.md`.
 
 If tracked, run `git rm -r --cached venv test_tz.go 2>/dev/null || true`.
 Delete from disk if present: `rm -rf venv test_tz.go`.
@@ -52,19 +55,20 @@ Update `.gitignore`:
 venv/
 ```
 
-- [ ] **Step 3: Verify cleanliness**
+- [ ] **Step 3: Verify cleanliness and build**
 
 Run: `git status --porcelain`
-Expected: `venv/` and `test_tz.go` do not appear.
+Expected: `venv/` and `test_tz.go` do not appear. `docs/repo-evaluation-2026-07-23.md` and `docs/superpowers/specs/2026-07-21-local-backup-target-design.md` remain intact.
 
 Run: `go build ./...`
 Expected: PASS.
 
 - [ ] **Step 4: Commit Phase 0 Task 1**
 
+Stage ONLY the exact `.gitignore` file (never use blanket `git add .`):
 ```bash
 git add .gitignore
-git commit -m "chore(repo): remove committed venv and scratch test_tz file"
+git commit -m "chore(repo): remove untracked venv and scratch test_tz file"
 ```
 
 ---
@@ -211,7 +215,7 @@ git commit -m "ci: add pull request and push CI workflow with fmt, vet, and race
 **Files:**
 - Modify: `.github/workflows/release.yml`
 
-- [ ] **Step 1: Add independent formatting and vet checks to `release.yml` before build step**
+- [ ] **Step 1: Add independent formatting, vet, and race checks to `release.yml` before build step**
 
 In `.github/workflows/release.yml`:
 ```yaml
@@ -232,8 +236,8 @@ In `.github/workflows/release.yml`:
 
 - [ ] **Step 2: Validate workflow YAML syntax**
 
-Run: `go run -exec true .github/workflows/release.yml 2>&1 | grep -q "no Go files" || true`
-Expected: Valid YAML.
+Run: `python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" .github/workflows/release.yml` (or `ruby -e "require 'yaml'; YAML.load_file(ARGV[0])" .github/workflows/release.yml`)
+Expected: Exit code 0 (valid YAML file parsed cleanly).
 
 - [ ] **Step 3: Commit Phase 1 Task 6**
 
@@ -261,6 +265,7 @@ package engine
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 )
@@ -335,7 +340,11 @@ type command interface {
 }
 
 func (c execCommand) SetEnv(env []string) {
-	c.cmd.Env = append(os.Environ(), env...)
+	if len(c.cmd.Env) == 0 {
+		c.cmd.Env = append(os.Environ(), env...)
+	} else {
+		c.cmd.Env = append(c.cmd.Env, env...)
+	}
 }
 ```
 
@@ -374,6 +383,14 @@ func runRcon(ctx context.Context, container, password, command string, retries i
 		}
 	}
 	return fmt.Errorf("rcon %q failed after %d retries", command, retries)
+}
+
+func rconOutput(ctx context.Context, container, password, command string) (string, error) {
+	args := rconCommand(container, command)
+	cmd := commandRunner.CommandContext(ctx, args[0], args[1:]...)
+	cmd.SetEnv([]string{fmt.Sprintf("RCON_PASSWORD=%s", password)})
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 ```
 
@@ -419,6 +436,23 @@ func TestNonLoopbackBindWithoutTokenFailsValidation(t *testing.T) {
 		t.Fatal("expected validation error for non-loopback bind with empty api_token, got nil")
 	}
 }
+
+func TestLoadConfigValidationIntegration(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	content := `
+[global]
+listen_addr = "0.0.0.0:47990"
+api_token = ""
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), "invalid config:") {
+		t.Fatalf("expected LoadConfig to return invalid config error, got: %v", err)
+	}
+}
 ```
 
 In `internal/engine/status_test.go`:
@@ -430,7 +464,8 @@ func TestStatusAPIAuth(t *testing.T) {
 		OnScan:   func() {},
 		OnBackup: func(server string, offline bool) {},
 	}
-	server := startTestStatusServer("127.0.0.1:0", jt, callbacks, "secret-token")
+	mux := newStatusMux(jt, callbacks, "secret-token")
+	server := httptest.NewServer(mux)
 	defer server.Close()
 
 	// POST /backup without token -> 401
@@ -460,15 +495,21 @@ func TestStatusAPIAuth(t *testing.T) {
 	if err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK for GET /status without token, got status %v, err %v", resp.StatusCode, err)
 	}
+
+	// GET /health (read-only) without token -> 200
+	resp, err = http.Get(server.URL + "/health")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for GET /health without token, got status %v, err %v", resp.StatusCode, err)
+	}
 }
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test -v ./internal/engine -run "TestNonLoopbackBindWithoutTokenFailsValidation|TestStatusAPIAuth"`
-Expected: FAIL due to missing `APIToken` field and auth check implementation.
+Run: `go test -v ./internal/engine -run "TestNonLoopbackBindWithoutTokenFailsValidation|TestLoadConfigValidationIntegration|TestStatusAPIAuth"`
+Expected: FAIL due to missing `APIToken` field, `ValidateConfig` call in `LoadConfig`, and `newStatusMux`/`requireAuth` implementations.
 
-- [ ] **Step 3: Implement `APIToken` field, validation, auth middleware, and CLI header propagation**
+- [ ] **Step 3: Implement `APIToken` field, `LoadConfig` validation, auth middleware, and CLI header propagation**
 
 In `internal/engine/config.go`:
 ```go
@@ -501,11 +542,75 @@ func ValidateConfig(cfg *Config) error {
 	}
 	return nil
 }
+
+func LoadConfig(path string) (*Config, error) {
+	cfg, err := loadConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	applyEnvOverrides(cfg)
+	if err := ValidateConfig(cfg); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	return cfg, nil
+}
 ```
 
 In `internal/engine/status.go`:
 ```go
 import "crypto/subtle"
+
+func startStatusServer(addr string, jt *JobTracker, callbacks StatusCallbacks, apiToken string) {
+	mux := newStatusMux(jt, callbacks, apiToken)
+	go func() {
+		slog.Info("status API listening", "addr", addr)
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			slog.Error("status API server error", "error", err)
+		}
+	}()
+}
+
+func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, apiToken string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(jt.Snapshot())
+	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/cancel", requireAuth(apiToken, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		callbacks.OnCancel()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("canceled"))
+	}))
+	mux.HandleFunc("/scan", requireAuth(apiToken, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		callbacks.OnScan()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("scan triggered"))
+	}))
+	mux.HandleFunc("/backup", requireAuth(apiToken, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		server := r.URL.Query().Get("server")
+		offline := r.URL.Query().Get("offline") == "true"
+		callbacks.OnBackup(server, offline)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("backup triggered"))
+	}))
+	return mux
+}
 
 func requireAuth(token string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -525,15 +630,36 @@ func requireAuth(token string, next http.HandlerFunc) http.HandlerFunc {
 }
 ```
 
+In `internal/engine/daemon.go`:
+Update `startStatusServer` call to pass `cfg.Global.APIToken`:
+```go
+	startStatusServer(cfg.Global.ListenAddr, d.jobTracker, StatusCallbacks{
+		OnCancel: d.Cancel,
+		OnScan: func() {
+			go d.runDiscovery(ctx)
+		},
+		OnBackup: func(server string, offline bool) {
+			go d.runBackupCycle(ctx, server, offline)
+		},
+	}, cfg.Global.APIToken)
+```
+
 In `cmd/mc-backup/main.go`:
-Update HTTP request building for mutating commands (`backup`, `cancel`, `scan`) to attach `Authorization: Bearer <token>` when `cfg.Global.APIToken` is non-empty.
+Update `backupCmd` and `postCmd` to set `Authorization: Bearer <token>` when `cfg.Global.APIToken != ""`:
+```go
+	req, err := http.NewRequest(http.MethodPost, ..., nil)
+	if err != nil { ... }
+	if cfg.Global.APIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Global.APIToken)
+	}
+```
 
 In `config.example.toml` and `README.md`:
 Document `api_token` configuration, loopback binding security recommendations, and bearer token requirement for remote binding.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test -v ./internal/engine -run "TestNonLoopbackBindWithoutTokenFailsValidation|TestStatusAPIAuth"`
+Run: `go test -v ./internal/engine -run "TestNonLoopbackBindWithoutTokenFailsValidation|TestLoadConfigValidationIntegration|TestStatusAPIAuth"`
 Expected: PASS.
 
 - [ ] **Step 5: Commit Phase 2 Task 8**
@@ -596,10 +722,12 @@ git commit -m "test(config): verify restricted permissions on auto-provisioned c
 **Files:**
 - Modify: `internal/engine/config.go`
 - Modify: `internal/engine/backup.go`
+- Modify: `config.example.toml`
+- Modify: `README.md`
 - Test: `internal/engine/config_test.go`
 - Test: `internal/engine/backup_test.go`
 
-- [ ] **Step 1: Write failing tests for global and per-server excludes resolution and rsync argument construction**
+- [ ] **Step 1: Write failing tests for global and per-server excludes resolution, TOML round-trip, env overrides, CLI get/set, and rsync argument construction**
 
 In `internal/engine/config_test.go` and `internal/engine/backup_test.go`:
 ```go
@@ -639,14 +767,51 @@ func TestLocalRsyncArgsExcludes(t *testing.T) {
 		t.Errorf("expected --exclude args in rsync command, got: %v", args)
 	}
 }
+
+func TestConfigExcludesTOMLAndEnvOverrides(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	tomlData := `
+[global]
+excludes = ["*.tmp", "cache"]
+
+[server.creative]
+excludes = []
+`
+	if err := os.WriteFile(cfgPath, []byte(tomlData), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	cfg, err := loadConfigFile(cfgPath)
+	if err != nil {
+		t.Fatalf("loadConfigFile: %v", err)
+	}
+	if len(cfg.Global.Excludes) != 2 || cfg.Global.Excludes[0] != "*.tmp" {
+		t.Errorf("unexpected global excludes: %v", cfg.Global.Excludes)
+	}
+	srv, ok := cfg.Servers["creative"]
+	if !ok || srv.Excludes == nil || len(*srv.Excludes) != 0 {
+		t.Errorf("expected non-nil empty excludes for server creative, got: %v", srv.Excludes)
+	}
+
+	// Verify CLI Get/Set
+	val := GetConfigValue(cfg, "global.excludes")
+	if val != "*.tmp,cache" {
+		t.Errorf("expected '*.tmp,cache', got %q", val)
+	}
+	valSrv := GetConfigValue(cfg, "server.creative.excludes")
+	if valSrv != "" {
+		t.Errorf("expected empty string for empty slice, got %q", valSrv)
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test -v ./internal/engine -run "TestResolveExcludesNilFallbackAndExplicitEmpty|TestLocalRsyncArgsExcludes"`
+Run: `go test -v ./internal/engine -run "TestResolveExcludesNilFallbackAndExplicitEmpty|TestLocalRsyncArgsExcludes|TestConfigExcludesTOMLAndEnvOverrides"`
 Expected: FAIL due to missing `Excludes` fields and resolution helper.
 
-- [ ] **Step 3: Implement `Excludes` fields, resolution logic using `server.Excludes == nil`, and argument propagation**
+- [ ] **Step 3: Implement `Excludes` fields, resolution logic using `server.Excludes == nil`, `SaveAutoServers` output, env overrides, CLI get/set, and argument propagation**
 
 In `internal/engine/config.go`:
 ```go
@@ -682,18 +847,56 @@ func resolveExcludes(global GlobalConfig, server ServerConfig) []string {
 }
 ```
 
+Update `serverFieldKeys` in `internal/engine/config.go` to include `"excludes"`.
+
+In `setGlobalField`:
+```go
+case "excludes":
+	if val == "" {
+		v.Excludes = nil
+	} else {
+		v.Excludes = splitCommaList(val)
+	}
+```
+
+In `setServerField`:
+```go
+case "excludes":
+	if val == "" || strings.EqualFold(val, "none") {
+		empty := []string{}
+		s.Excludes = &empty
+	} else {
+		list := splitCommaList(val)
+		s.Excludes = &list
+	}
+```
+
+In `GetConfigValue` / `getGlobalField` / `getServerFieldStr`:
+- `global.excludes` returns comma-joined string.
+- `server.<name>.excludes` returns comma-joined string if non-nil, or `"<inherited>"` if nil.
+
+In `SaveAutoServers`:
+```go
+if s.Excludes != nil {
+	fmt.Fprintf(f, "excludes = %s\n", formatTOMLSlice(*s.Excludes))
+}
+```
+
 In `internal/engine/backup.go`:
 In `BackupServer`, replace hardcoded `excludes := []string{"*.jar", "cache", "logs", "*.tmp"}` with `excludes := resolveExcludes(be.cfg.Global, server)`.
 
+In `config.example.toml` and `README.md`:
+Document `excludes` under `[global]` and `[server.<name>]`, env overrides (`MC_BACKUP_GLOBAL_EXCLUDES`, `MC_BACKUP_SERVER_<NAME>_EXCLUDES`), and CLI config usage.
+
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test -v ./internal/engine -run "TestResolveExcludesNilFallbackAndExplicitEmpty|TestLocalRsyncArgsExcludes"`
+Run: `go test -v ./internal/engine -run "TestResolveExcludesNilFallbackAndExplicitEmpty|TestLocalRsyncArgsExcludes|TestConfigExcludesTOMLAndEnvOverrides"`
 Expected: PASS.
 
 - [ ] **Step 5: Commit Phase 3 Task 10**
 
 ```bash
-git add internal/engine/config.go internal/engine/backup.go internal/engine/config_test.go internal/engine/backup_test.go
+git add internal/engine/config.go internal/engine/backup.go config.example.toml README.md internal/engine/config_test.go internal/engine/backup_test.go
 git commit -m "feat(engine): support global and per-server rsync excludes with nil fallback and explicit empty semantics"
 ```
 
@@ -710,9 +913,9 @@ git commit -m "feat(engine): support global and per-server rsync excludes with n
 In `internal/engine/prune_test.go`:
 ```go
 func TestNASCountPruneCommandUsesNoRunIfEmpty(t *testing.T) {
-	cmd := nasCountPruneCommand("/dest/root/namespace/server", 5)
-	if !strings.Contains(cmd, "xargs -r rm -rf") && !strings.Contains(cmd, "xargs --no-run-if-empty rm -rf") {
-		t.Errorf("expected xargs -r or --no-run-if-empty in remote NAS count prune command, got: %s", cmd)
+	cmd := pruneNASByCountCommand("/dest/root", "minecraft", "survival", 5)
+	if !strings.Contains(cmd, "xargs -r rm -rf") {
+		t.Errorf("expected xargs -r rm -rf in remote NAS count prune command, got: %s", cmd)
 	}
 }
 ```
@@ -722,14 +925,17 @@ func TestNASCountPruneCommandUsesNoRunIfEmpty(t *testing.T) {
 Run: `go test -v ./internal/engine -run TestNASCountPruneCommandUsesNoRunIfEmpty`
 Expected: FAIL because current command string uses `xargs rm -rf` without `-r`.
 
-- [ ] **Step 3: Update `prune.go` command builder to use `xargs -r rm -rf`**
+- [ ] **Step 3: Update `prune.go` command builder to use `xargs -r rm -rf` while preserving existing signature**
 
 In `internal/engine/prune.go`:
-Update NAS count-prune shell command construction to include `-r`:
+Preserve `pruneNASByCountCommand(destRoot, namespace, serverName string, count int) string` name and signature:
 ```go
-func nasCountPruneCommand(dir string, keepCount int) string {
-	return fmt.Sprintf("ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | tail -n +%d | xargs -r rm -rf",
-		shellQuote(dir), keepCount+1)
+func pruneNASByCountCommand(destRoot, namespace, serverName string, count int) string {
+	destDir := fmt.Sprintf("%s/%s/%s", destRoot, namespace, serverName)
+	return fmt.Sprintf(
+		"ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | tail -n +%d | xargs -r rm -rf",
+		shellQuote(destDir), count+1,
+	)
 }
 ```
 
@@ -898,13 +1104,14 @@ git commit -m "fix(cli): use cap-plus-one bounded reader for HTTP status API res
 - [ ] **Step 1: Add documentation comment to `Daemon.lastBackups` field**
 
 In `internal/engine/daemon.go`:
+Preserve field type `lastBackups map[string]*lastBackup` in `Daemon` struct:
 ```go
 type Daemon struct {
-    // ...
-    // lastBackups stores the last recorded snapshot paths per server.
-    // Concurrency guarantee: All reads and writes to lastBackups after initial startup
-    // are serialized strictly under cycleMu.
-    lastBackups map[string]lastSnapshotEntry
+	// ...
+	// lastBackups stores the last recorded snapshot paths per server (namespace/serverName -> *lastBackup).
+	// Concurrency guarantee: All reads and writes to lastBackups after daemon startup
+	// are serialized strictly under Daemon.cycleMu.
+	lastBackups map[string]*lastBackup
 }
 ```
 
@@ -1094,7 +1301,11 @@ func ValidateConfig(cfg *Config) error {
 	}
 	hasNASTarget := false
 	for _, s := range cfg.Servers {
-		if s.Target == "nas" || s.Target == "" {
+		target := s.Target
+		if target == "" {
+			target = "nas"
+		}
+		if target == "nas" {
 			hasNASTarget = true
 			break
 		}
@@ -1105,6 +1316,21 @@ func ValidateConfig(cfg *Config) error {
 		}
 	}
 	return nil
+}
+```
+
+Ensure `LoadConfig` invokes `ValidateConfig(cfg)` as introduced in Task 8:
+```go
+func LoadConfig(path string) (*Config, error) {
+	cfg, err := loadConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	applyEnvOverrides(cfg)
+	if err := ValidateConfig(cfg); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	return cfg, nil
 }
 ```
 
@@ -1233,5 +1459,13 @@ Expected:
 
 ### Verification Checks Performed During Plan Self-Review
 - All 20 plan tasks are complete without placeholders, TODOs, or vague directions.
-- Function signatures, Go types, and interface definitions (`command`, `commandRunnerInterface`, `GlobalConfig`, `ServerConfig`, `ValidateConfig`, `readResponseBody`) were matched against existing repository code in `internal/engine/` and `cmd/mc-backup/`.
+- Function signatures, Go types, and interface definitions (`command`, `commandRunnerInterface`, `GlobalConfig`, `ServerConfig`, `ValidateConfig`, `readResponseBody`, `pruneNASByCountCommand`) were matched against existing repository code in `internal/engine/` and `cmd/mc-backup/`.
 - Ordering strictly follows Phase 0 -> Phase 1 -> Phase 2 -> Phase 3 -> Phase 4 -> Phase 5 -> Final Verification.
+- `LoadConfig` explicitly invokes `ValidateConfig(cfg)` returning `fmt.Errorf("invalid config: %w", err)` with integration test.
+- `rcon.go` and `rcon_test.go` snippets include `io` import and update both `runRcon` and `rconOutput`.
+- `status.go` and `status_test.go` define `newStatusMux` helper using `httptest.NewServer` directly.
+- `pruneNASByCountCommand` preserves signature `(destRoot, namespace, serverName string, count int)`.
+- `lastBackups map[string]*lastBackup` in `Daemon` is preserved without invented types.
+- YAML syntax check uses `python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))"`.
+- `excludes` plumbing covers structs, defaults, resolution, TOML round-trip, `SaveAutoServers`, env overrides, CLI get/set, example config, and README.
+- Task 1 explicitly preserves `docs/repo-evaluation-2026-07-23.md` and `docs/superpowers/specs/2026-07-21-local-backup-target-design.md`, removing only `venv/` and `test_tz.go`, and staging only `.gitignore`.
