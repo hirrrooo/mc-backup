@@ -210,6 +210,55 @@ func TestNASCountPrunePipelineWithSpaces(t *testing.T) {
 	}
 }
 
+func TestNASDaysPrunePipelineServerRootProtection(t *testing.T) {
+	tmp := t.TempDir()
+	destRoot := filepath.Join(tmp, "backups")
+	namespace := "minecraft"
+	serverName := "20200101-1200"
+
+	destDir := filepath.Join(destRoot, namespace, serverName)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldTime := time.Now().Add(-30 * 24 * time.Hour)
+
+	oldChild := filepath.Join(destDir, "20200102-1200")
+	if err := os.Mkdir(oldChild, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(oldChild, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	newChild := filepath.Join(destDir, "20260101-1200")
+	if err := os.Mkdir(newChild, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chtimes(destDir, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdStr := pruneNASByDaysCommand(destRoot, namespace, serverName, 7)
+	testCmd := strings.Replace(cmdStr, " -maxdepth", " -regextype posix-basic -maxdepth", 1)
+	cmd := exec.Command("bash", "-c", testCmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune NAS days pipeline failed: %v, output: %s", err, string(output))
+	}
+
+	if _, err := os.Stat(destDir); os.IsNotExist(err) {
+		t.Fatalf("server directory %s was deleted by day pruning", destDir)
+	}
+	if _, err := os.Stat(oldChild); !os.IsNotExist(err) {
+		t.Errorf("expected old child snapshot %s to be pruned", oldChild)
+	}
+	if _, err := os.Stat(newChild); err != nil {
+		t.Errorf("expected new child snapshot %s to exist, err = %v", newChild, err)
+	}
+}
+
 func TestPruneNASByDays(t *testing.T) {
 	nas := NASConfig{
 		SSHUser:  "backup",
