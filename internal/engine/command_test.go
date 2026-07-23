@@ -112,3 +112,14 @@ func TestExecCommandSetEnv(t *testing.T) {
 		t.Error("expected both injected env vars to be present after second SetEnv call")
 	}
 }
+
+func TestExecCommandSetEnvPreservesExplicitEmptyEnv(t *testing.T) {
+	ctx := context.Background()
+	ec := execCommandRunner{}.CommandContext(ctx, "true").(execCommand)
+	ec.cmd.Env = []string{} // non-nil empty environment
+	ec.SetEnv([]string{"FOO=bar"})
+
+	if len(ec.cmd.Env) != 1 || ec.cmd.Env[0] != "FOO=bar" {
+		t.Fatalf("expected ec.cmd.Env to be [FOO=bar], got: %v", ec.cmd.Env)
+	}
+}

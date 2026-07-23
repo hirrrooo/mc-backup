@@ -41,7 +41,7 @@ func (c execCommand) SetStdout(w io.Writer) { c.cmd.Stdout = w }
 func (c execCommand) SetStderr(w io.Writer) { c.cmd.Stderr = w }
 
 func (c execCommand) SetEnv(env []string) {
-	if len(c.cmd.Env) == 0 {
+	if c.cmd.Env == nil {
 		c.cmd.Env = append(os.Environ(), env...)
 	} else {
 		c.cmd.Env = append(c.cmd.Env, env...)
