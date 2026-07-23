@@ -236,13 +236,20 @@ func TestNASDaysPrunePipelineServerRootProtection(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	malformedChild := filepath.Join(destDir, "not-a-snapshot")
+	if err := os.Mkdir(malformedChild, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(malformedChild, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := os.Chtimes(destDir, oldTime, oldTime); err != nil {
 		t.Fatal(err)
 	}
 
 	cmdStr := pruneNASByDaysCommand(destRoot, namespace, serverName, 7)
-	testCmd := strings.Replace(cmdStr, " -maxdepth", " -regextype posix-basic -maxdepth", 1)
-	cmd := exec.Command("bash", "-c", testCmd)
+	cmd := exec.Command("bash", "-c", cmdStr)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("prune NAS days pipeline failed: %v, output: %s", err, string(output))
@@ -256,6 +263,9 @@ func TestNASDaysPrunePipelineServerRootProtection(t *testing.T) {
 	}
 	if _, err := os.Stat(newChild); err != nil {
 		t.Errorf("expected new child snapshot %s to exist, err = %v", newChild, err)
+	}
+	if _, err := os.Stat(malformedChild); err != nil {
+		t.Errorf("expected malformed child directory %s to exist, err = %v", malformedChild, err)
 	}
 }
 

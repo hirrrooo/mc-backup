@@ -39,7 +39,7 @@ func TestRemoteNASCommandsQuoteConfiguredPaths(t *testing.T) {
 	}
 
 	days := pruneNASByDaysCommand("/volume 1/backups", "minecraft", "server one", 7)
-	wantDays := "find '/volume 1/backups/minecraft/server one' -mindepth 1 -maxdepth 1 -type d -regex '.*/[0-9]\\{8\\}-[0-9]\\{4\\}' -mtime +7 -exec rm -rf {} +"
+	wantDays := "find '/volume 1/backups/minecraft/server one' -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]' -mtime +7 -exec rm -rf {} +"
 	if days != wantDays {
 		t.Fatalf("pruneNASByDaysCommand() = %q, want %q", days, wantDays)
 	}

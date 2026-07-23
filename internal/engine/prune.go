@@ -82,7 +82,7 @@ func pruneNASByDays(ctx context.Context, nas NASConfig, destRoot, namespace, ser
 func pruneNASByDaysCommand(destRoot, namespace, serverName string, days int) string {
 	destDir := fmt.Sprintf("%s/%s/%s", destRoot, namespace, serverName)
 	return fmt.Sprintf(
-		"find %s -mindepth 1 -maxdepth 1 -type d -regex '.*/[0-9]\\{8\\}-[0-9]\\{4\\}' -mtime +%d -exec rm -rf {} +",
+		"find %s -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]' -mtime +%d -exec rm -rf {} +",
 		shellQuote(destDir), days,
 	)
 }
