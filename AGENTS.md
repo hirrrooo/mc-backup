@@ -6,7 +6,7 @@
 - **Test all:** `go test ./...`
 - **Test single package:** `go test ./internal/engine/...` or `go test ./cmd/...`
 - **Lint:** `gofmt -d .` (Go's built-in formatter)
-- No CI, no pre-commit hooks.
+- CI/CD: PR/push checks (`go test ./...`, `gofmt`) and rolling `latest` GitHub release publishing. No pre-commit hooks.
 
 ## Architecture
 
@@ -32,5 +32,5 @@
 
 - Backups: RCON `save-off` → flush → rsync → RCON `save-on` (deferred guarantee even on panic)
 - NAS operations require a `.nas-ready` sentinel file on the NAS; without it, all SSH-based work is skipped
-- NAS writes are serialized via a buffered channel (`nasWriteLock`, size 1)
+- Backup cycles including NAS writes and `lastBackups` updates are serialized by `Daemon.cycleMu`
 - Snapshot directories use format `YYYYMMDD-HHMM` (13 chars, dash at position 8)
