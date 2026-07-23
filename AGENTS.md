@@ -6,7 +6,7 @@
 - **Test all:** `go test ./...`
 - **Test single package:** `go test ./internal/engine/...` or `go test ./cmd/...`
 - **Lint:** `gofmt -d .` (Go's built-in formatter)
-- CI/CD: PR/push checks (`go test ./...`, `gofmt`) and rolling `latest` GitHub release publishing. No pre-commit hooks.
+- CI/CD: `.github/workflows/ci.yml` runs PR/push checks (`go test ./...`, `gofmt`), and `.github/workflows/release.yml` publishes rolling `latest` GitHub releases on `main`. No pre-commit hooks.
 
 ## Architecture
 
