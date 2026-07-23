@@ -1614,7 +1614,7 @@ In `internal/engine/config_test.go`, update existing test fixtures that call `Lo
    os.WriteFile(autoPath, []byte("[server.creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\nrcon_password = \"old\"\n"), 0644)
    ```
 
-6. `TestSaveAutoServersAtomicRoundTrip`: update main config fixture to include valid NAS fields:
+6. `TestSaveAutoServers` / `TestSaveAutoServersAtomicRoundTrip`: update main config fixture to include valid `[nas]` fields (`ssh_user`, `ssh_host`, `dest_root`):
    ```go
    os.WriteFile(cfgPath, []byte("[global]\n\n[nas]\nssh_user = \"backup\"\nssh_host = \"nas.local\"\ndest_root = \"/volume1/backups\"\n"), 0644)
    ```
