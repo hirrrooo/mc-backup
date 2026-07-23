@@ -353,7 +353,9 @@ func TestPruneLocalByCountReadErrorAndEdgeCases(t *testing.T) {
 	// Keep <= 0
 	tmp := t.TempDir()
 	d := filepath.Join(tmp, "20250611-1000")
-	os.Mkdir(d, 0755)
+	if err := os.Mkdir(d, 0755); err != nil {
+		t.Fatalf("Mkdir failed: %v", err)
+	}
 	pruneLocalByCount(tmp, 0)
 	if _, err := os.Stat(d); err != nil {
 		t.Errorf("snapshot should remain when keep=0, err=%v", err)

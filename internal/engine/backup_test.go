@@ -629,8 +629,11 @@ func TestRunRsyncExecution(t *testing.T) {
 
 	// Test runRsync with progress callback using a dummy script that ignores flags
 	script := filepath.Join(t.TempDir(), "dummy-rsync.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"    1,048,576  50%   10.00MB/s    0:00:05\"\n"), 0755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"    1,048,576  50%   10.00MB/s    0:00:05\"\n"), 0600); err != nil {
 		t.Fatalf("failed to write dummy script: %v", err)
+	}
+	if err := os.Chmod(script, 0700); err != nil {
+		t.Fatalf("failed to chmod dummy script: %v", err)
 	}
 
 	progressCalled := false
