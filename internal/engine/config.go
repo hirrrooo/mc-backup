@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -313,7 +314,7 @@ func autoServersPath(cfgPath string) string {
 // main config. It handles main and auto file updates transactionally: both temp
 // files are written and closed before replacement, and any replacement failure
 // rolls back already-replaced files to prevent partial state.
-func saveSplit(path string, cfg *Config) error {
+func saveSplit(path string, cfg *Config) (err error) {
 	autoNames := loadAutoServerNames(path)
 
 	main := cloneConfig(cfg)
@@ -331,65 +332,65 @@ func saveSplit(path string, cfg *Config) error {
 
 	mainExisted := false
 	mainMode := os.FileMode(0600)
-	if info, err := os.Stat(mainPath); err == nil {
+	if info, statErr := os.Stat(mainPath); statErr == nil {
 		mainExisted = true
 		mainMode = info.Mode().Perm()
 	}
 
 	autoExisted := false
-	if _, err := os.Stat(autoPath); err == nil {
+	if _, statErr := os.Stat(autoPath); statErr == nil {
 		autoExisted = true
 	}
 
 	// Step 1: Write and sync temp files for both main and auto
-	mainFile, err := os.CreateTemp(dir, filepath.Base(mainPath)+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp for %s: %w", mainPath, err)
+	mainFile, createErr := os.CreateTemp(dir, filepath.Base(mainPath)+".*.tmp")
+	if createErr != nil {
+		return fmt.Errorf("create temp for %s: %w", mainPath, createErr)
 	}
 	mainTemp := mainFile.Name()
 	defer func() { _ = removeFile(mainTemp) }()
 
-	if err := mainFile.Chmod(mainMode); err != nil {
+	if chmodErr := mainFile.Chmod(mainMode); chmodErr != nil {
 		mainFile.Close()
-		return fmt.Errorf("chmod temp %s: %w", mainTemp, err)
+		return fmt.Errorf("chmod temp %s: %w", mainTemp, chmodErr)
 	}
 
 	enc := toml.NewEncoder(mainFile)
 	enc.Indent = ""
-	if err := enc.Encode(main); err != nil {
+	if encErr := enc.Encode(main); encErr != nil {
 		mainFile.Close()
-		return fmt.Errorf("encode %s: %w", mainPath, err)
+		return fmt.Errorf("encode %s: %w", mainPath, encErr)
 	}
-	if err := mainFile.Sync(); err != nil {
+	if syncErr := mainFile.Sync(); syncErr != nil {
 		mainFile.Close()
-		return fmt.Errorf("sync %s: %w", mainTemp, err)
+		return fmt.Errorf("sync %s: %w", mainTemp, syncErr)
 	}
-	if err := mainFile.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", mainTemp, err)
+	if closeErr := mainFile.Close(); closeErr != nil {
+		return fmt.Errorf("close %s: %w", mainTemp, closeErr)
 	}
 
 	var autoTemp string
 	if len(auto) > 0 {
-		autoFile, err := os.CreateTemp(dir, filepath.Base(autoPath)+".*.tmp")
-		if err != nil {
-			return fmt.Errorf("create temp for %s: %w", autoPath, err)
+		autoFile, createErr := os.CreateTemp(dir, filepath.Base(autoPath)+".*.tmp")
+		if createErr != nil {
+			return fmt.Errorf("create temp for %s: %w", autoPath, createErr)
 		}
 		autoTemp = autoFile.Name()
 		defer func() { _ = removeFile(autoTemp) }()
 
-		if err := autoFile.Chmod(0600); err != nil {
+		if chmodErr := autoFile.Chmod(0600); chmodErr != nil {
 			autoFile.Close()
-			return fmt.Errorf("chmod temp %s: %w", autoTemp, err)
+			return fmt.Errorf("chmod temp %s: %w", autoTemp, chmodErr)
 		}
 
 		writeAutoServersTo(autoFile, auto)
 
-		if err := autoFile.Sync(); err != nil {
+		if syncErr := autoFile.Sync(); syncErr != nil {
 			autoFile.Close()
-			return fmt.Errorf("sync %s: %w", autoTemp, err)
+			return fmt.Errorf("sync %s: %w", autoTemp, syncErr)
 		}
-		if err := autoFile.Close(); err != nil {
-			return fmt.Errorf("close %s: %w", autoTemp, err)
+		if closeErr := autoFile.Close(); closeErr != nil {
+			return fmt.Errorf("close %s: %w", autoTemp, closeErr)
 		}
 	}
 
@@ -402,81 +403,73 @@ func saveSplit(path string, cfg *Config) error {
 	autoBackupCreated := false
 
 	defer func() {
-		if mainBackupCreated {
-			_ = removeFile(mainBackup)
-		}
-		if autoBackupCreated {
-			_ = removeFile(autoBackup)
+		if err == nil {
+			if mainBackupCreated {
+				_ = removeFile(mainBackup)
+			}
+			if autoBackupCreated {
+				_ = removeFile(autoBackup)
+			}
 		}
 	}()
 
+	rollback := func(origErr error) error {
+		var rbErrs []error
+		if autoBackupCreated {
+			if rbErr := renameFile(autoBackup, autoPath); rbErr == nil {
+				autoBackupCreated = false
+			} else {
+				rbErrs = append(rbErrs, fmt.Errorf("rollback %s: %w", autoPath, rbErr))
+			}
+		} else if len(auto) > 0 && !autoExisted {
+			_ = removeFile(autoPath)
+		}
+
+		if mainBackupCreated {
+			if rbErr := renameFile(mainBackup, mainPath); rbErr == nil {
+				mainBackupCreated = false
+			} else {
+				rbErrs = append(rbErrs, fmt.Errorf("rollback %s: %w", mainPath, rbErr))
+			}
+		} else if !mainExisted {
+			_ = removeFile(mainPath)
+		}
+
+		if len(rbErrs) > 0 {
+			return errors.Join(append([]error{origErr}, rbErrs...)...)
+		}
+		return origErr
+	}
+
 	if mainExisted {
-		if err := renameFile(mainPath, mainBackup); err != nil {
-			return fmt.Errorf("backup %s: %w", mainPath, err)
+		if renameErr := renameFile(mainPath, mainBackup); renameErr != nil {
+			return fmt.Errorf("backup %s: %w", mainPath, renameErr)
 		}
 		mainBackupCreated = true
 	}
 
-	if err := renameFile(mainTemp, mainPath); err != nil {
-		if mainBackupCreated {
-			_ = renameFile(mainBackup, mainPath)
-			mainBackupCreated = false
-		}
-		return fmt.Errorf("replace %s: %w", mainPath, err)
+	if renameErr := renameFile(mainTemp, mainPath); renameErr != nil {
+		return rollback(fmt.Errorf("replace %s: %w", mainPath, renameErr))
 	}
 
 	if len(auto) > 0 {
 		if autoExisted {
-			if err := renameFile(autoPath, autoBackup); err != nil {
-				if mainBackupCreated {
-					_ = renameFile(mainBackup, mainPath)
-					mainBackupCreated = false
-				} else if !mainExisted {
-					_ = removeFile(mainPath)
-				}
-				return fmt.Errorf("backup %s: %w", autoPath, err)
+			if renameErr := renameFile(autoPath, autoBackup); renameErr != nil {
+				return rollback(fmt.Errorf("backup %s: %w", autoPath, renameErr))
 			}
 			autoBackupCreated = true
 		}
 
-		if err := renameFile(autoTemp, autoPath); err != nil {
-			if autoBackupCreated {
-				_ = renameFile(autoBackup, autoPath)
-				autoBackupCreated = false
-			}
-			if mainBackupCreated {
-				_ = renameFile(mainBackup, mainPath)
-				mainBackupCreated = false
-			} else if !mainExisted {
-				_ = removeFile(mainPath)
-			}
-			return fmt.Errorf("replace %s: %w", autoPath, err)
+		if renameErr := renameFile(autoTemp, autoPath); renameErr != nil {
+			return rollback(fmt.Errorf("replace %s: %w", autoPath, renameErr))
 		}
 
-		if err := chmodFile(autoPath, 0600); err != nil {
-			if autoExisted {
-				_ = renameFile(autoBackup, autoPath)
-				autoBackupCreated = false
-			} else {
-				_ = removeFile(autoPath)
-			}
-			if mainBackupCreated {
-				_ = renameFile(mainBackup, mainPath)
-				mainBackupCreated = false
-			} else if !mainExisted {
-				_ = removeFile(mainPath)
-			}
-			return fmt.Errorf("chmod %s: %w", autoPath, err)
+		if chmodErr := chmodFile(autoPath, 0600); chmodErr != nil {
+			return rollback(fmt.Errorf("chmod %s: %w", autoPath, chmodErr))
 		}
 	} else if autoExisted {
-		if err := renameFile(autoPath, autoBackup); err != nil {
-			if mainBackupCreated {
-				_ = renameFile(mainBackup, mainPath)
-				mainBackupCreated = false
-			} else if !mainExisted {
-				_ = removeFile(mainPath)
-			}
-			return fmt.Errorf("remove auto %s: %w", autoPath, err)
+		if renameErr := renameFile(autoPath, autoBackup); renameErr != nil {
+			return rollback(fmt.Errorf("remove auto %s: %w", autoPath, renameErr))
 		}
 		autoBackupCreated = true
 	}

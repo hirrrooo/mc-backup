@@ -1832,6 +1832,80 @@ func TestSaveSplitRollbackOnAutoRemovalFailure(t *testing.T) {
 	}
 }
 
+func TestSaveSplitRollbackPreservesBackupOnRollbackFailure(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+
+	mainContent := []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n\n[local]\ndest_root = \"/tmp\"\n")
+	autoContent := []byte("[server.creative]\nenabled = true\ntarget = \"local\"\ncontainer_name = \"creative-mc-1\"\n")
+
+	if err := os.WriteFile(cfgPath, mainContent, 0600); err != nil {
+		t.Fatalf("write main config: %v", err)
+	}
+	if err := os.WriteFile(autoPath, autoContent, 0600); err != nil {
+		t.Fatalf("write auto config: %v", err)
+	}
+
+	cfg, err := loadConfigFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Global.MaxMBps = 99.0
+
+	origRename := renameFile
+	renameFile = func(src, dst string) error {
+		// Fail when replacing auto sidecar
+		if strings.HasSuffix(dst, "-auto.toml") && !strings.Contains(src, ".bak.") {
+			return errors.New("simulated auto sidecar rename failure")
+		}
+		// Fail when rolling back main backup to main config path
+		if strings.HasSuffix(dst, "config.toml") && strings.Contains(src, ".bak.") {
+			return errors.New("simulated main rollback rename failure")
+		}
+		return origRename(src, dst)
+	}
+	defer func() { renameFile = origRename }()
+
+	err = saveSplit(cfgPath, cfg)
+	if err == nil {
+		t.Fatal("expected saveSplit to fail")
+	}
+
+	// 1. Error must mention both original failure and rollback failure
+	errStr := err.Error()
+	if !strings.Contains(errStr, "simulated auto sidecar rename failure") {
+		t.Errorf("expected error to contain original failure, got: %v", errStr)
+	}
+	if !strings.Contains(errStr, "simulated main rollback rename failure") {
+		t.Errorf("expected error to contain rollback failure, got: %v", errStr)
+	}
+
+	// 2. Original main backup must remain on disk for recovery and defer must not delete it
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mainBackupFile string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".config.toml.bak.") {
+			mainBackupFile = filepath.Join(tmp, entry.Name())
+			break
+		}
+	}
+	if mainBackupFile == "" {
+		t.Fatal("expected main backup file to remain on disk after rollback failure, but none was found")
+	}
+
+	backupData, err := os.ReadFile(mainBackupFile)
+	if err != nil {
+		t.Fatalf("failed to read preserved main backup file: %v", err)
+	}
+	if !bytes.Equal(mainContent, backupData) {
+		t.Errorf("preserved backup content mismatch:\nGot:\n%s\nWant:\n%s", backupData, mainContent)
+	}
+}
+
 func TestDurationMarshalUnmarshal(t *testing.T) {
 	d := Duration{Duration: 5 * time.Minute}
 	bytes, err := d.MarshalText()
