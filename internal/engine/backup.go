@@ -97,6 +97,13 @@ func runRsync(ctx context.Context, args []string, onProgress func(bytesMoved, to
 
 var rsyncRunner = runRsync
 
+func runSync(ctx context.Context) {
+	cmd := commandRunner.CommandContext(ctx, "sync")
+	if err := cmd.Run(); err != nil {
+		slog.Warn("filesystem sync failed", "error", err)
+	}
+}
+
 func checkNASReady(ctx context.Context, nas NASConfig) error {
 	sentinel := fmt.Sprintf("%s/.nas-ready", nas.DestRoot)
 	args := sshBaseArgs(nas)
@@ -201,7 +208,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 		slog.Info("offline backup, skipping RCON", "server", serverName)
 	}
 
-	commandRunner.CommandContext(context.Background(), "sync").Run()
+	runSync(ctx)
 
 	ts := time.Now().Format("20060102-1504")
 

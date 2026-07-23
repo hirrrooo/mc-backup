@@ -3,7 +3,9 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,9 +16,10 @@ type recordingCommand struct {
 	name string
 	args []string
 	env  []string
+	err  error
 }
 
-func (c *recordingCommand) Run() error                      { return nil }
+func (c *recordingCommand) Run() error                      { return c.err }
 func (c *recordingCommand) Output() ([]byte, error)         { return nil, nil }
 func (c *recordingCommand) CombinedOutput() ([]byte, error) { return nil, nil }
 func (c *recordingCommand) SetStdout(_ io.Writer)           {}
@@ -307,5 +310,96 @@ func TestStreamRsyncProgressHandlesCarriageReturns(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("progress update %d = %#v, want %#v", i, got[i], want[i])
 		}
+	}
+}
+
+func TestBackupServerSyncHonorsCallerContext(t *testing.T) {
+	type ctxKey struct{}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "test-value")
+
+	localRoot := t.TempDir()
+	source := t.TempDir()
+
+	var capturedCtx context.Context
+	var syncCalled bool
+
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		if name == "sync" {
+			syncCalled = true
+			capturedCtx = c
+		}
+		return &recordingCommand{name: name, args: args}
+	})
+
+	previousRsyncRunner := rsyncRunner
+	rsyncRunner = func(_ context.Context, _ []string, _ func(int64, int64)) error {
+		return nil
+	}
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	withCommandRunner(runner, func() {
+		_, _, err := NewBackupEngine(Config{
+			Local: LocalConfig{DestRoot: localRoot},
+		}).BackupServer(ctx, WatchConfig{Namespace: "mc"}, "survival",
+			ServerConfig{Target: "local", DataDir: source}, "", "", true)
+		if err != nil {
+			t.Fatalf("BackupServer failed: %v", err)
+		}
+	})
+
+	if !syncCalled {
+		t.Fatal("sync was not called")
+	}
+	if capturedCtx == nil {
+		t.Fatal("sync received nil context")
+	}
+	if capturedCtx.Value(ctxKey{}) != "test-value" {
+		t.Errorf("sync context value = %v, want 'test-value'", capturedCtx.Value(ctxKey{}))
+	}
+}
+
+func TestBackupServerSyncFailureEmitsWarningAndContinues(t *testing.T) {
+	localRoot := t.TempDir()
+	source := t.TempDir()
+
+	syncErr := errors.New("disk sync timeout")
+	runner := commandRunnerFunc(func(ctx context.Context, name string, args ...string) command {
+		if name == "sync" {
+			return &recordingCommand{name: name, args: args, err: syncErr}
+		}
+		return &recordingCommand{name: name, args: args}
+	})
+
+	previousRsyncRunner := rsyncRunner
+	rsyncRunner = func(_ context.Context, _ []string, _ func(int64, int64)) error {
+		return nil
+	}
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	previousLogger := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(previousLogger)
+
+	withCommandRunner(runner, func() {
+		destPath, _, err := NewBackupEngine(Config{
+			Local: LocalConfig{DestRoot: localRoot},
+		}).BackupServer(context.Background(), WatchConfig{Namespace: "mc"}, "survival",
+			ServerConfig{Target: "local", DataDir: source}, "", "", true)
+		if err != nil {
+			t.Fatalf("BackupServer failed when sync failed: %v", err)
+		}
+		if destPath == "" {
+			t.Fatal("expected non-empty destPath on sync error")
+		}
+	})
+
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "LEVEL=WARN") && !strings.Contains(logStr, "level=WARN") {
+		t.Errorf("expected WARN level log in output: %s", logStr)
+	}
+	if !strings.Contains(logStr, "disk sync timeout") {
+		t.Errorf("expected log output to contain sync error message 'disk sync timeout': %s", logStr)
 	}
 }
