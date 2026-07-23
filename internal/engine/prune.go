@@ -97,7 +97,7 @@ func pruneNASByCount(ctx context.Context, nas NASConfig, destRoot, namespace, se
 func pruneNASByCountCommand(destRoot, namespace, serverName string, count int) string {
 	destDir := fmt.Sprintf("%s/%s/%s", destRoot, namespace, serverName)
 	return fmt.Sprintf(
-		"ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | tail -n +%d | xargs -r rm -rf",
+		"ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | tail -n +%d | tr '\\n' '\\0' | xargs -0 -r rm -rf --",
 		shellQuote(destDir), count+1,
 	)
 }

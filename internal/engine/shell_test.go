@@ -45,7 +45,7 @@ func TestRemoteNASCommandsQuoteConfiguredPaths(t *testing.T) {
 	}
 
 	count := pruneNASByCountCommand("/volume 1/backups", "minecraft", "server one", 3)
-	wantCount := "ls -dt '/volume 1/backups/minecraft/server one'/[0-9]*-[0-9]* 2>/dev/null | tail -n +4 | xargs -r rm -rf"
+	wantCount := "ls -dt '/volume 1/backups/minecraft/server one'/[0-9]*-[0-9]* 2>/dev/null | tail -n +4 | tr '\\n' '\\0' | xargs -0 -r rm -rf --"
 	if count != wantCount {
 		t.Fatalf("pruneNASByCountCommand() = %q, want %q", count, wantCount)
 	}

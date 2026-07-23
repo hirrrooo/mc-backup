@@ -2,6 +2,7 @@ package engine
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -129,7 +130,75 @@ func TestLocalRetentionCombinesDaysAndCount(t *testing.T) {
 
 func TestNASCountPruneCommandUsesNoRunIfEmpty(t *testing.T) {
 	cmd := pruneNASByCountCommand("/dest/root", "minecraft", "survival", 5)
-	if !strings.Contains(cmd, "xargs -r rm -rf") {
-		t.Errorf("expected xargs -r rm -rf in remote NAS count prune command, got: %s", cmd)
+	if !strings.Contains(cmd, "tr '\\n' '\\0'") {
+		t.Errorf("expected NUL byte conversion (tr '\\n' '\\0') in remote NAS count prune command, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "xargs -0 -r rm -rf --") {
+		t.Errorf("expected xargs -0 -r rm -rf -- in remote NAS count prune command, got: %s", cmd)
+	}
+	if strings.Contains(cmd, "| xargs -r") {
+		t.Errorf("found insecure plain whitespace-splitting | xargs -r in command: %s", cmd)
+	}
+}
+
+func TestNASCountPrunePipelineWithSpaces(t *testing.T) {
+	tmp := t.TempDir()
+	destRoot := filepath.Join(tmp, "volume 1", "backups")
+	namespace := "minecraft world"
+	serverName := "survival server"
+
+	destDir := filepath.Join(destRoot, namespace, serverName)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshots := []struct {
+		name  string
+		mtime time.Time
+	}{
+		{"20260101-1000", time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)},
+		{"20260102-1000", time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)},
+		{"20260103-1000", time.Date(2026, 1, 3, 10, 0, 0, 0, time.UTC)},
+		{"20260104-1000", time.Date(2026, 1, 4, 10, 0, 0, 0, time.UTC)},
+		{"20260105-1000", time.Date(2026, 1, 5, 10, 0, 0, 0, time.UTC)},
+	}
+	for _, snap := range snapshots {
+		dirPath := filepath.Join(destDir, snap.name)
+		if err := os.Mkdir(dirPath, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(dirPath, snap.mtime, snap.mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmdStr := pruneNASByCountCommand(destRoot, namespace, serverName, 3)
+	cmd := exec.Command("bash", "-c", cmdStr)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune NAS count pipeline failed: %v, output: %s", err, string(output))
+	}
+
+	for _, snap := range []string{"20260101-1000", "20260102-1000"} {
+		if _, err := os.Stat(filepath.Join(destDir, snap)); !os.IsNotExist(err) {
+			t.Errorf("expected snapshot %s to be pruned", snap)
+		}
+	}
+	for _, snap := range []string{"20260103-1000", "20260104-1000", "20260105-1000"} {
+		if _, err := os.Stat(filepath.Join(destDir, snap)); err != nil {
+			t.Errorf("expected snapshot %s to exist, err = %v", snap, err)
+		}
+	}
+
+	cmdStrEmpty := pruneNASByCountCommand(destRoot, namespace, serverName, 5)
+	cmdEmpty := exec.Command("bash", "-c", cmdStrEmpty)
+	outputEmpty, err := cmdEmpty.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune NAS count empty pipeline failed: %v, output: %s", err, string(outputEmpty))
+	}
+	for _, snap := range []string{"20260103-1000", "20260104-1000", "20260105-1000"} {
+		if _, err := os.Stat(filepath.Join(destDir, snap)); err != nil {
+			t.Errorf("expected snapshot %s to still exist after empty prune, err = %v", snap, err)
+		}
 	}
 }
