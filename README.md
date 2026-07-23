@@ -118,7 +118,8 @@ namespace = "minecraft"
 
 ```toml
 [global]
-listen_addr = "127.0.0.1:47990"
+listen_addr = "127.0.0.1:47990"  # default loopback listener
+api_token = ""                 # bearer token for status API mutations (optional on loopback, required on remote interfaces)
 backup_interval = "1h"
 initial_delay = "2m"
 max_mbps = 40.0             # rate limit for NAS rsync
@@ -188,6 +189,15 @@ mc-backup config set global.backup_interval 2h
 
 Changes take effect within seconds through inotify, except `listen_addr`,
 which requires a service restart.
+
+### API Security & Authentication
+
+The daemon exposes an HTTP status API on `global.listen_addr`.
+- **Read-only endpoints** (`/status`, `/health`) remain unauthenticated for monitoring.
+- **Mutating endpoints** (`/backup`, `/scan`, `/cancel`) require an `Authorization: Bearer <token>` header when `global.api_token` is configured.
+- **Loopback binding** (`127.0.0.1`, `localhost`, `::1`) is recommended and default. `api_token` is optional when bound to loopback.
+- **Remote interface binding** (non-loopback IP/interface) **requires** `global.api_token` to be set; daemon configuration validation will reject non-loopback bindings without a token.
+- When `global.api_token` is set, CLI mutating commands (`mc-backup backup`, `mc-backup scan`, `mc-backup cancel`) automatically attach the configured bearer header.
 
 ## NAS Setup
 

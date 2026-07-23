@@ -1,10 +1,12 @@
 package engine
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"text/tabwriter"
 
@@ -57,7 +59,20 @@ type StatusCallbacks struct {
 	OnBackup func(server string, offline bool)
 }
 
-func startStatusServer(addr string, jt *JobTracker, callbacks StatusCallbacks) {
+func checkBearerToken(r *http.Request, token string) bool {
+	if token == "" {
+		return true
+	}
+	auth := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if !strings.HasPrefix(auth, prefix) {
+		return false
+	}
+	got := strings.TrimPrefix(auth, prefix)
+	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+}
+
+func newStatusMux(jt *JobTracker, callbacks StatusCallbacks, token string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -72,6 +87,10 @@ func startStatusServer(addr string, jt *JobTracker, callbacks StatusCallbacks) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		if !checkBearerToken(r, token) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		callbacks.OnCancel()
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("canceled"))
@@ -79,6 +98,10 @@ func startStatusServer(addr string, jt *JobTracker, callbacks StatusCallbacks) {
 	mux.HandleFunc("/scan", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if !checkBearerToken(r, token) {
+			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		callbacks.OnScan()
@@ -90,16 +113,24 @@ func startStatusServer(addr string, jt *JobTracker, callbacks StatusCallbacks) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		if !checkBearerToken(r, token) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		server := r.URL.Query().Get("server")
 		offline := r.URL.Query().Get("offline") == "true"
 		callbacks.OnBackup(server, offline)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("backup triggered"))
 	})
+	return mux
+}
 
+func startStatusServer(addr, token string, jt *JobTracker, callbacks StatusCallbacks) {
+	handler := newStatusMux(jt, callbacks, token)
 	go func() {
 		slog.Info("status API listening", "addr", addr)
-		if err := http.ListenAndServe(addr, mux); err != nil {
+		if err := http.ListenAndServe(addr, handler); err != nil {
 			slog.Error("status API server error", "error", err)
 		}
 	}()

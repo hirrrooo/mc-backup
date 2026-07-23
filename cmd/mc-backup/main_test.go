@@ -155,3 +155,43 @@ func TestVerifyChecksumMissingSidecar(t *testing.T) {
 		t.Fatalf("expected HTTP 404 error, got: %v", err)
 	}
 }
+
+func TestCLIMutatingCommandsBearerToken(t *testing.T) {
+	var receivedAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	cfgContent := fmt.Sprintf(`
+[global]
+listen_addr = "%s"
+api_token = "cli-secret-token"
+`, srv.Listener.Addr().String())
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+
+	// Test postCmd ("scan")
+	receivedAuth = ""
+	os.Args = []string{"mc-backup", "scan", "--config", cfgPath}
+	postCmd("scan")
+	if receivedAuth != "Bearer cli-secret-token" {
+		t.Errorf("scan CLI command auth header = %q, want %q", receivedAuth, "Bearer cli-secret-token")
+	}
+
+	// Test backupCmd
+	receivedAuth = ""
+	os.Args = []string{"mc-backup", "backup", "--config", cfgPath, "survival"}
+	backupCmd()
+	if receivedAuth != "Bearer cli-secret-token" {
+		t.Errorf("backup CLI command auth header = %q, want %q", receivedAuth, "Bearer cli-secret-token")
+	}
+}

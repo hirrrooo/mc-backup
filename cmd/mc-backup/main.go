@@ -183,6 +183,9 @@ func backupCmd() {
 		fmt.Fprintf(os.Stderr, "backup: %v\n", err)
 		os.Exit(1)
 	}
+	if cfg.Global.APIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Global.APIToken)
+	}
 	q := req.URL.Query()
 	if server != "" {
 		q.Set("server", server)
@@ -203,6 +206,9 @@ func backupCmd() {
 	switch {
 	case resp.StatusCode == http.StatusOK:
 		fmt.Printf("backup: %s\n", buf[:n])
+	case resp.StatusCode == http.StatusUnauthorized:
+		fmt.Fprintf(os.Stderr, "backup: unauthorized (check global.api_token)\n")
+		os.Exit(1)
 	default:
 		fmt.Fprintf(os.Stderr, "backup: daemon returned %d\n", resp.StatusCode)
 		os.Exit(1)
@@ -226,6 +232,9 @@ func postCmd(endpoint string) {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", endpoint, err)
 		os.Exit(1)
 	}
+	if cfg.Global.APIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Global.APIToken)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s failed: %v\n", endpoint, err)
@@ -238,6 +247,9 @@ func postCmd(endpoint string) {
 		var buf [64]byte
 		n, _ := resp.Body.Read(buf[:])
 		fmt.Printf("%s: %s\n", endpoint, buf[:n])
+	case resp.StatusCode == http.StatusUnauthorized:
+		fmt.Fprintf(os.Stderr, "%s: unauthorized (check global.api_token)\n", endpoint)
+		os.Exit(1)
 	case resp.StatusCode == http.StatusMethodNotAllowed:
 		fmt.Fprintf(os.Stderr, "%s: daemon not responding to POST\n", endpoint)
 		os.Exit(1)

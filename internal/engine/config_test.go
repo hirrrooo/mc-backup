@@ -406,3 +406,172 @@ func TestSaveAutoServersEmptyRemovesFile(t *testing.T) {
 		t.Fatalf("auto file should be removed, got err=%v", err)
 	}
 }
+
+func TestAPITokenConfig(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+api_token = "toml-secret"
+`)
+	if err := os.WriteFile(cfgPath, content, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Global.APIToken != "toml-secret" {
+		t.Errorf("APIToken from TOML = %q, want %q", cfg.Global.APIToken, "toml-secret")
+	}
+	if got := GetConfigValue(cfg, "global.api_token"); got != "toml-secret" {
+		t.Errorf("GetConfigValue = %q, want %q", got, "toml-secret")
+	}
+
+	t.Setenv("MC_BACKUP_GLOBAL_API_TOKEN", "env-secret")
+	cfgEnv, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig with env: %v", err)
+	}
+	if cfgEnv.Global.APIToken != "env-secret" {
+		t.Errorf("APIToken from env = %q, want %q", cfgEnv.Global.APIToken, "env-secret")
+	}
+
+	if err := SetConfigValue(cfgPath, "global.api_token", "new-secret"); err != nil {
+		t.Fatalf("SetConfigValue: %v", err)
+	}
+	os.Unsetenv("MC_BACKUP_GLOBAL_API_TOKEN")
+	cfgSaved, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig saved: %v", err)
+	}
+	if cfgSaved.Global.APIToken != "new-secret" {
+		t.Errorf("APIToken after set = %q, want %q", cfgSaved.Global.APIToken, "new-secret")
+	}
+}
+
+func TestConfigValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		listenAddr  string
+		apiToken    string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:       "valid loopback ipv4 without token",
+			listenAddr: "127.0.0.1:47990",
+			apiToken:   "",
+			wantErr:    false,
+		},
+		{
+			name:       "valid loopback localhost without token",
+			listenAddr: "localhost:47990",
+			apiToken:   "",
+			wantErr:    false,
+		},
+		{
+			name:       "valid loopback ipv6 without token",
+			listenAddr: "[::1]:47990",
+			apiToken:   "",
+			wantErr:    false,
+		},
+		{
+			name:       "valid loopback ipv4 with token",
+			listenAddr: "127.0.0.1:47990",
+			apiToken:   "secret",
+			wantErr:    false,
+		},
+		{
+			name:       "valid non-loopback 0.0.0.0 with token",
+			listenAddr: "0.0.0.0:47990",
+			apiToken:   "secret",
+			wantErr:    false,
+		},
+		{
+			name:       "valid non-loopback specific ip with token",
+			listenAddr: "192.168.1.100:47990",
+			apiToken:   "secret",
+			wantErr:    false,
+		},
+		{
+			name:        "invalid non-loopback 0.0.0.0 without token",
+			listenAddr:  "0.0.0.0:47990",
+			apiToken:    "",
+			wantErr:     true,
+			errContains: "invalid config:",
+		},
+		{
+			name:        "invalid non-loopback colon port without token",
+			listenAddr:  ":47990",
+			apiToken:    "",
+			wantErr:     true,
+			errContains: "invalid config:",
+		},
+		{
+			name:        "invalid malformed address no port",
+			listenAddr:  "127.0.0.1",
+			apiToken:    "",
+			wantErr:     true,
+			errContains: "invalid config:",
+		},
+		{
+			name:        "invalid malformed address string port",
+			listenAddr:  "127.0.0.1:abc",
+			apiToken:    "",
+			wantErr:     true,
+			errContains: "invalid config:",
+		},
+		{
+			name:        "invalid malformed port out of range",
+			listenAddr:  "127.0.0.1:999999",
+			apiToken:    "",
+			wantErr:     true,
+			errContains: "invalid config:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Global: GlobalConfig{
+					ListenAddr: tt.listenAddr,
+					APIToken:   tt.apiToken,
+				},
+			}
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil {
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.errContains)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadConfigValidationIntegration(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	content := []byte(`
+[global]
+listen_addr = "0.0.0.0:47990"
+`)
+	if err := os.WriteFile(cfgPath, content, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("LoadConfig should fail for non-loopback listen_addr without api_token")
+	}
+	if !strings.Contains(err.Error(), "invalid config:") {
+		t.Errorf("LoadConfig error %q should contain 'invalid config:'", err.Error())
+	}
+}

@@ -1,5 +1,6 @@
 [global]
-listen_addr = "127.0.0.1:47990"
+listen_addr = "127.0.0.1:47990"  # Bound to loopback by default. Non-loopback requires api_token.
+# api_token = ""                 # Bearer token for mutating API endpoints. Recommended for loopback, required for remote binding.
 backup_interval = "1h"
 initial_delay = "2m"
 max_mbps = 40.0

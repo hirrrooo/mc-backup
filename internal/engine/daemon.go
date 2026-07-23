@@ -236,7 +236,7 @@ func (d *Daemon) Run() error {
 		slog.Warn("config watcher failed, live reload disabled", "error", err)
 	}
 
-	startStatusServer(cfg.Global.ListenAddr, d.jobTracker, StatusCallbacks{
+	startStatusServer(cfg.Global.ListenAddr, cfg.Global.APIToken, d.jobTracker, StatusCallbacks{
 		OnCancel: d.Cancel,
 		OnScan: func() {
 			go d.runDiscovery(ctx)

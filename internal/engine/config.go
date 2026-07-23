@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -31,6 +32,7 @@ type GlobalConfig struct {
 	BackupInterval Duration `toml:"backup_interval"`
 	InitialDelay   Duration `toml:"initial_delay"`
 	MaxMBps        float64  `toml:"max_mbps"`
+	APIToken       string   `toml:"api_token"`
 }
 
 type NASConfig struct {
@@ -77,12 +79,45 @@ type Config struct {
 	Servers   map[string]ServerConfig `toml:"server"`
 }
 
+func (c *Config) Validate() error {
+	if c.Global.ListenAddr == "" {
+		return fmt.Errorf("invalid config: global.listen_addr is required")
+	}
+	host, portStr, err := net.SplitHostPort(c.Global.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("invalid config: malformed global.listen_addr %q: %w", c.Global.ListenAddr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid config: invalid port in global.listen_addr %q", c.Global.ListenAddr)
+	}
+
+	if !isLoopbackHost(host) && c.Global.APIToken == "" {
+		return fmt.Errorf("invalid config: non-loopback global.listen_addr %q requires global.api_token to be set", c.Global.ListenAddr)
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
+}
+
 func LoadConfig(path string) (*Config, error) {
 	cfg, err := loadConfigFile(path)
 	if err != nil {
 		return nil, err
 	}
 	applyEnvOverrides(cfg)
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -316,6 +351,8 @@ func setGlobalField(v *GlobalConfig, key, val string) {
 	switch key {
 	case "listen_addr":
 		v.ListenAddr = val
+	case "api_token":
+		v.APIToken = val
 	case "max_mbps":
 		if f, err := strconv.ParseFloat(val, 64); err == nil {
 			v.MaxMBps = f
@@ -547,6 +584,8 @@ func getGlobalField(g GlobalConfig, key string) string {
 	switch key {
 	case "listen_addr":
 		return g.ListenAddr
+	case "api_token":
+		return g.APIToken
 	case "max_mbps":
 		return fmt.Sprintf("%.1f", g.MaxMBps)
 	case "backup_interval":
