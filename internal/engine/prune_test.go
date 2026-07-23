@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -123,5 +124,12 @@ func TestLocalRetentionCombinesDaysAndCount(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(localPath, "20250619-1000")); err != nil {
 		t.Errorf("newest snapshot missing: %v", err)
+	}
+}
+
+func TestNASCountPruneCommandUsesNoRunIfEmpty(t *testing.T) {
+	cmd := pruneNASByCountCommand("/dest/root", "minecraft", "survival", 5)
+	if !strings.Contains(cmd, "xargs -r rm -rf") {
+		t.Errorf("expected xargs -r rm -rf in remote NAS count prune command, got: %s", cmd)
 	}
 }
