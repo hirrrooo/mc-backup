@@ -229,12 +229,14 @@ func (d *Daemon) provisionServers(cfg *Config, newServers []struct {
 }
 
 func (d *Daemon) Run() error {
-	cfg := d.ac.Load()
-	setupLogging(d.Debug)
-
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	return d.RunContext(ctx)
+}
 
+func (d *Daemon) RunContext(ctx context.Context) error {
+	cfg := d.ac.Load()
+	setupLogging(d.Debug)
 	if err := watchConfig(d.cfgPath, &d.ac); err != nil {
 		slog.Warn("config watcher failed, live reload disabled", "error", err)
 	}
@@ -505,6 +507,10 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string, offli
 	slog.Info("backup cycle complete", "duration", time.Since(startTime).Round(time.Second))
 }
 
+var triggerDiscoveryBackup = func(d *Daemon, ctx context.Context) {
+	go d.runBackupCycle(ctx, "", false)
+}
+
 func (d *Daemon) runDiscovery(ctx context.Context) {
 	cfg := d.ac.Load()
 	_, newServers := discoverServersWithWarning(cfg.Watch, cfg.Servers, d.warnLegacyBackupDirOnce)
@@ -512,6 +518,6 @@ func (d *Daemon) runDiscovery(ctx context.Context) {
 	_ = d.provisionServers(cfg, newServers)
 	if len(newServers) > 0 {
 		slog.Info("new servers discovered, triggering immediate backup cycle")
-		go d.runBackupCycle(ctx, "", false)
+		triggerDiscoveryBackup(d, ctx)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordingCommand struct {
@@ -17,6 +18,11 @@ type recordingCommand struct {
 	args []string
 	env  []string
 	err  error
+}
+type errTestReader struct{}
+
+func (errTestReader) Read(p []byte) (int, error) {
+	return 0, errors.New("read error")
 }
 
 func (c *recordingCommand) Run() error                      { return c.err }
@@ -646,4 +652,272 @@ func TestRunRsyncExecution(t *testing.T) {
 	if !progressCalled {
 		t.Error("expected progress callback to be invoked")
 	}
+}
+func TestRunRsyncErrorAndProgressEdgeCases(t *testing.T) {
+	ctx := context.Background()
+	if err := runRsync(ctx, []string{"false"}, nil); err == nil {
+		t.Error("expected runRsync error when command exits non-zero")
+	}
+
+	// parseRsyncProgress invalid lines
+	b, tot, ok := parseRsyncProgress("invalid line")
+	if ok || b != 0 || tot != 0 {
+		t.Errorf("parseRsyncProgress invalid line = (%d, %d, %v), want (0, 0, false)", b, tot, ok)
+	}
+}
+func TestBackupServerAllBranches(t *testing.T) {
+	tmp := t.TempDir()
+	oldInterval := rconRetryInterval
+	rconRetryInterval = 1 * time.Millisecond
+	t.Cleanup(func() { rconRetryInterval = oldInterval })
+	watchDir := filepath.Join(tmp, "watch")
+	_ = os.MkdirAll(filepath.Join(watchDir, "s1", "mc-data"), 0755)
+
+	oldRsync := rsyncRunner
+	rsyncRunner = func(ctx context.Context, args []string, progress func(int64, int64)) error {
+		if progress != nil {
+			progress(100, 200)
+		}
+		return nil
+	}
+	t.Cleanup(func() { rsyncRunner = oldRsync })
+
+	cfg := Config{
+		Local: LocalConfig{DestRoot: filepath.Join(tmp, "local")},
+		NAS: NASConfig{
+			SSHUser:  "user",
+			SSHHost:  "nas.local",
+			DestRoot: "/volume1/backups",
+		},
+		Watch: []WatchConfig{{Path: watchDir, Namespace: "mc"}},
+		Servers: map[string]ServerConfig{
+			"s1": {Enabled: true, Target: "local"},
+			"s2": {Enabled: true, Target: "nas"},
+		},
+	}
+
+	engine := NewBackupEngine(cfg)
+
+	// Offline local backup success
+	dest, usedSSH, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", true)
+	if err != nil || dest == "" || usedSSH {
+		t.Errorf("offline local backup failed: dest=%q, usedSSH=%v, err=%v", dest, usedSSH, err)
+	}
+
+	// Online local backup success with mock RCON
+	runnerSuccess := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte("Success"),
+		}
+	})
+	withCommandRunner(runnerSuccess, func() {
+		dest, usedSSH, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
+		if err != nil || dest == "" || usedSSH {
+			t.Errorf("online local backup failed: dest=%q, usedSSH=%v, err=%v", dest, usedSSH, err)
+		}
+	})
+
+	// Online local backup save-off error
+	runnerSaveOffErr := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			err:              errors.New("save-off failed"),
+		}
+	})
+	withCommandRunner(runnerSaveOffErr, func() {
+		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
+		if err == nil || !strings.Contains(err.Error(), "save-off") {
+			t.Errorf("expected save-off error, got %v", err)
+		}
+	})
+
+	// Online local backup save-all flush error
+	runnerFlushErr := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		for _, a := range args {
+			if a == "save-all flush" {
+				return &mockOutputCommand{
+					recordingCommand: recordingCommand{name: name, args: args},
+					err:              errors.New("flush failed"),
+				}
+			}
+		}
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte("Success"),
+		}
+	})
+	withCommandRunner(runnerFlushErr, func() {
+		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
+		if err == nil || !strings.Contains(err.Error(), "flush") {
+			t.Errorf("expected flush error, got %v", err)
+		}
+	})
+	// Online local backup rsync error
+	rsyncRunner = func(ctx context.Context, args []string, progress func(int64, int64)) error {
+		return errors.New("rsync failed")
+	}
+	withCommandRunner(runnerSuccess, func() {
+		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
+		if err == nil || !strings.Contains(err.Error(), "rsync") {
+			t.Errorf("expected rsync error, got %v", err)
+		}
+	})
+	// Local mkdir error
+	parentFile := filepath.Join(tmp, "parent_file")
+	_ = os.WriteFile(parentFile, []byte("file"), 0600)
+	badCfg := cfg
+	badCfg.Local.DestRoot = parentFile
+	badEngine := NewBackupEngine(badCfg)
+	_, _, err = badEngine.BackupServer(context.Background(), badCfg.Watch[0], "s1", badCfg.Servers["s1"], "", "", true)
+	if err == nil || !strings.Contains(err.Error(), "local mkdir") {
+		t.Errorf("expected local mkdir error, got %v", err)
+	}
+
+	// Save-on failure (backup succeeded)
+	runnerSaveOnErr := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		for _, a := range args {
+			if a == "save-on" {
+				return &mockOutputCommand{
+					recordingCommand: recordingCommand{name: name, args: args},
+					err:              errors.New("save-on failed"),
+				}
+			}
+		}
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte("Success"),
+		}
+	})
+	rsyncRunner = func(ctx context.Context, args []string, progress func(int64, int64)) error { return nil }
+	withCommandRunner(runnerSaveOnErr, func() {
+		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
+		if err == nil || !strings.Contains(err.Error(), "save-on") {
+			t.Errorf("expected save-on error, got %v", err)
+		}
+	})
+
+	// Save-on failure (backup also failed)
+	rsyncRunnerErr := func(ctx context.Context, args []string, progress func(int64, int64)) error {
+		return errors.New("rsync failed")
+	}
+	rsyncRunner = rsyncRunnerErr
+	withCommandRunner(runnerSaveOnErr, func() {
+		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
+		if err == nil || !strings.Contains(err.Error(), "rsync") {
+			t.Errorf("expected rsync error, got %v", err)
+		}
+	})
+
+	// NAS backup success & error branches
+	runnerNASSuccess := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		if name == "ssh" {
+			for _, a := range args {
+				if strings.Contains(a, "test -f") {
+					return &mockOutputCommand{
+						recordingCommand: recordingCommand{name: name, args: args},
+						out:              []byte("ready"),
+					}
+				}
+			}
+		}
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte("Success"),
+		}
+	})
+
+	rsyncRunner = func(ctx context.Context, args []string, progress func(int64, int64)) error { return nil }
+	withCommandRunner(runnerNASSuccess, func() {
+		dest, usedSSH, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s2", cfg.Servers["s2"], "", "", true)
+		if err != nil || dest == "" || !usedSSH {
+			t.Errorf("NAS backup success failed: dest=%q, usedSSH=%v, err=%v", dest, usedSSH, err)
+		}
+	})
+
+	// NAS ensureNASDir error
+	runnerNASEnsureErr := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		if name == "ssh" {
+			for _, a := range args {
+				if strings.Contains(a, "mkdir") {
+					return &mockOutputCommand{
+						recordingCommand: recordingCommand{name: name, args: args, err: errors.New("mkdir failed")},
+						err:              errors.New("mkdir failed"),
+					}
+				}
+			}
+		}
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte("ready"),
+		}
+	})
+	withCommandRunner(runnerNASEnsureErr, func() {
+		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s2", cfg.Servers["s2"], "", "", true)
+		if err == nil || !strings.Contains(err.Error(), "create NAS dir") {
+			t.Errorf("expected create NAS dir error, got %v", err)
+		}
+	})
+
+	// NAS rsync error
+	rsyncRunner = func(ctx context.Context, args []string, progress func(int64, int64)) error {
+		return errors.New("nas rsync failed")
+	}
+	withCommandRunner(runnerNASSuccess, func() {
+		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s2", cfg.Servers["s2"], "", "", true)
+		if err == nil || !strings.Contains(err.Error(), "NAS rsync") {
+			t.Errorf("expected NAS rsync error, got %v", err)
+		}
+	})
+}
+
+func TestBackupServerNASReadyFailAndRsyncRunner(t *testing.T) {
+	tmp := t.TempDir()
+	oldInterval := rconRetryInterval
+	rconRetryInterval = 1 * time.Millisecond
+	t.Cleanup(func() { rconRetryInterval = oldInterval })
+	watchDir := filepath.Join(tmp, "watch")
+
+	cfg := &Config{
+		NAS:   NASConfig{SSHHost: "nas.local", SSHUser: "user", DestRoot: "/nas"},
+		Watch: []WatchConfig{{Path: watchDir, Namespace: "mc"}},
+		Servers: map[string]ServerConfig{
+			"nas_server": {
+				Enabled: true,
+				Target:  "nas",
+			},
+		},
+	}
+
+	engine := NewBackupEngine(*cfg)
+
+	// checkNASReady failure -> returns error
+	runnerNASFail := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			err:              errors.New("ssh failed"),
+		}
+	})
+
+	withCommandRunner(runnerNASFail, func() {
+		_, _, err := engine.BackupServer(context.Background(), WatchConfig{Path: watchDir, Namespace: "mc"}, "nas_server", cfg.Servers["nas_server"], "", "", false)
+		if err == nil {
+			t.Error("expected BackupServer error when checkNASReady fails")
+		}
+	})
+}
+func TestRsyncScannerErrors(t *testing.T) {
+	// parseRsyncProgress empty / single field
+	if b, tot, ok := parseRsyncProgress("single"); ok || b != 0 || tot != 0 {
+		t.Errorf("parseRsyncProgress single = (%d, %d, %v), want (0, 0, false)", b, tot, ok)
+	}
+
+	// scanRsyncLines CRLF
+	advance, token, err := scanRsyncLines([]byte("line1\r\nline2"), false)
+	if advance != 7 || string(token) != "line1" || err != nil {
+		t.Fatalf("scanRsyncLines CRLF failed: adv=%d, token=%q, err=%v", advance, token, err)
+	}
+
+	// streamRsyncProgress error on broken reader
+	streamRsyncProgress(errTestReader{}, nil)
 }

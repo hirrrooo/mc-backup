@@ -98,9 +98,14 @@ func TestWarnLegacyBackupDir(t *testing.T) {
 type mockOutputCommand struct {
 	recordingCommand
 	out []byte
+	err error
 }
 
 func (c *mockOutputCommand) Output() ([]byte, error) {
+	return c.out, c.err
+}
+
+func (c *mockOutputCommand) CombinedOutput() ([]byte, error) {
 	return c.out, c.err
 }
 
@@ -194,6 +199,111 @@ func TestContainerUptimeAndRunning(t *testing.T) {
 		notRunning := containerRunning("other-server")
 		if notRunning {
 			t.Error("containerRunning returned true for other-server, want false")
+		}
+	})
+}
+func TestContainerUptimeAndRunningErrors(t *testing.T) {
+	// Command error for inspect
+	runnerErr := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			err:              context.DeadlineExceeded,
+		}
+	})
+
+	withCommandRunner(runnerErr, func() {
+		if _, err := containerUptime("mc-server"); err == nil {
+			t.Error("expected containerUptime error when command fails")
+		}
+		if containerRunning("mc-server") {
+			t.Error("expected containerRunning false when command fails")
+		}
+	})
+
+	// Parse error for invalid timestamp
+	runnerParseErr := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte("not-a-timestamp"),
+		}
+	})
+
+	withCommandRunner(runnerParseErr, func() {
+		if _, err := containerUptime("mc-server"); err == nil {
+			t.Error("expected containerUptime error for invalid timestamp")
+		}
+	})
+}
+func TestDiscoverServersAllBranches(t *testing.T) {
+	tmp := t.TempDir()
+	watchDir := filepath.Join(tmp, "watch")
+	_ = os.MkdirAll(filepath.Join(watchDir, "valid_server"), 0755)
+	_ = os.MkdirAll(filepath.Join(watchDir, "new_server"), 0755)
+	_ = os.MkdirAll(filepath.Join(watchDir, "disabled_server"), 0755)
+	_ = os.MkdirAll(filepath.Join(watchDir, "invalid server name!"), 0755)
+	_ = os.MkdirAll(filepath.Join(watchDir, ".dot_dir"), 0755)
+	_ = os.WriteFile(filepath.Join(watchDir, "regular_file.txt"), []byte("data"), 0600)
+
+	known := map[string]ServerConfig{
+		"valid_server":    {Enabled: true},
+		"disabled_server": {Enabled: false},
+	}
+
+	watches := []WatchConfig{
+		{Path: watchDir, Namespace: "mc"},
+		{Path: filepath.Join(tmp, "nonexistent_path"), Namespace: "mc"},
+	}
+
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte("new_server-mc-1"),
+		}
+	})
+
+	withCommandRunner(runner, func() {
+		results, newServers := discoverServers(watches, known)
+
+		if len(results) != 2 {
+			t.Fatalf("expected 2 discovered results (valid_server & new_server), got %d", len(results))
+		}
+
+		names := map[string]bool{}
+		for _, r := range results {
+			names[r.Name] = true
+		}
+		if !names["valid_server"] || !names["new_server"] {
+			t.Errorf("expected valid_server and new_server in results, got %v", names)
+		}
+		if names["disabled_server"] || names["invalid server name!"] || names[".dot_dir"] {
+			t.Errorf("found unexpected server in results: %v", names)
+		}
+
+		if len(newServers) != 1 || newServers[0].Name != "new_server" {
+			t.Fatalf("expected 1 new server (new_server), got %v", newServers)
+		}
+		if newServers[0].Server.ContainerName != "new_server-mc-1" {
+			t.Errorf("container name = %q, want new_server-mc-1", newServers[0].Server.ContainerName)
+		}
+	})
+}
+
+func TestDetectContainerNameNoComposeMatch(t *testing.T) {
+	tmp := t.TempDir()
+	serverDir := filepath.Join(tmp, "creative")
+	_ = os.MkdirAll(serverDir, 0755)
+	_ = os.WriteFile(filepath.Join(serverDir, "docker-compose.yml"), []byte("services:\n  other:\n    image: nginx\n"), 0600)
+
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte(""),
+		}
+	})
+	withCommandRunner(runner, func() {
+		got := detectContainerName(serverDir, "creative")
+		if got != "creative-mc-1" {
+			t.Errorf("detectContainerName = %q, want creative-mc-1", got)
 		}
 	})
 }

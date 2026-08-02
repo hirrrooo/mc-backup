@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -147,6 +148,10 @@ func startStatusServer(addr string, tokenSupplier func() string, jt *JobTracker,
 }
 
 func PrintDashboard(addr string) error {
+	return PrintDashboardTo(addr, os.Stdout)
+}
+
+func PrintDashboardTo(addr string, out io.Writer) error {
 	resp, err := http.Get(fmt.Sprintf("http://%s/status", addr))
 	if err != nil {
 		return fmt.Errorf("cannot connect to daemon at %s: %w", addr, err)
@@ -158,16 +163,16 @@ func PrintDashboard(addr string) error {
 		return fmt.Errorf("parse response: %w", err)
 	}
 
-	fmt.Println()
-	fmt.Println("[Minecraft Backup & Archive - Live Status]")
-	fmt.Println()
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "[Minecraft Backup & Archive - Live Status]")
+	fmt.Fprintln(out)
 
 	if len(jobs) == 0 {
-		fmt.Println("  No active transfers.")
+		fmt.Fprintln(out, "  No active transfers.")
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "SERVER\tSNAPSHOT\tSTATE\tPROGRESS\t")
 
 	for _, job := range jobs {

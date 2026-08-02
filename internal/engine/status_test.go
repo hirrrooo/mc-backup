@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -255,7 +257,7 @@ func TestStatusAPITokenRotation(t *testing.T) {
 	}
 }
 
-func TestPrintDashboard(t *testing.T) {
+func TestPrintDashboardToAndStartStatusServer(t *testing.T) {
 	jt := NewJobTracker()
 	jt.Add("minecraft/verylongservernamehere", &JobInfo{
 		ServerName: "verylongservernamehere",
@@ -276,15 +278,46 @@ func TestPrintDashboard(t *testing.T) {
 	defer srv.Close()
 
 	addr := srv.Listener.Addr().String()
-	if err := PrintDashboard(addr); err != nil {
-		t.Fatalf("PrintDashboard failed: %v", err)
+	var out bytes.Buffer
+	if err := PrintDashboardTo(addr, &out); err != nil {
+		t.Fatalf("PrintDashboardTo failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "verylongserv...") || !strings.Contains(out.String(), "Calculating...") || !strings.Contains(out.String(), "1.00G / 2.00G") {
+		t.Errorf("PrintDashboardTo out = %q, want truncated name, Calculating..., and 1.00G / 2.00G", out.String())
 	}
 
+	// Test empty jobs
 	emptyJt := NewJobTracker()
 	emptySrv := httptest.NewServer(newStatusMux(emptyJt, StatusCallbacks{}, func() string { return "" }))
 	defer emptySrv.Close()
 
-	if err := PrintDashboard(emptySrv.Listener.Addr().String()); err != nil {
-		t.Fatalf("PrintDashboard with empty jobs failed: %v", err)
+	out.Reset()
+	if err := PrintDashboardTo(emptySrv.Listener.Addr().String(), &out); err != nil {
+		t.Fatalf("PrintDashboardTo with empty jobs failed: %v", err)
 	}
+	if !strings.Contains(out.String(), "No active transfers.") {
+		t.Errorf("empty dashboard out = %q, want No active transfers.", out.String())
+	}
+
+	// Test PrintDashboard wrapper
+	if err := PrintDashboard(emptySrv.Listener.Addr().String()); err != nil {
+		t.Fatalf("PrintDashboard failed: %v", err)
+	}
+
+	// Test connection error
+	if err := PrintDashboardTo("invalid.localhost:99999", &out); err == nil {
+		t.Error("expected PrintDashboardTo error on connection failure")
+	}
+
+	// Test invalid JSON
+	badJsonSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("invalid json"))
+	}))
+	defer badJsonSrv.Close()
+	if err := PrintDashboardTo(badJsonSrv.Listener.Addr().String(), &out); err == nil {
+		t.Error("expected PrintDashboardTo error on invalid JSON")
+	}
+
+	// Test startStatusServer error path
+	startStatusServer("invalid-host-without-port", func() string { return "" }, jt, StatusCallbacks{})
 }

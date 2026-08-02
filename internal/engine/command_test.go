@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"io"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -121,5 +122,55 @@ func TestExecCommandSetEnvPreservesExplicitEmptyEnv(t *testing.T) {
 
 	if len(ec.cmd.Env) != 1 || ec.cmd.Env[0] != "FOO=bar" {
 		t.Fatalf("expected ec.cmd.Env to be [FOO=bar], got: %v", ec.cmd.Env)
+	}
+}
+func TestExecCommandMethods(t *testing.T) {
+	ctx := context.Background()
+	runner := execCommandRunner{}
+
+	// Test Run
+	cmdRun := runner.CommandContext(ctx, "echo", "hello")
+	if err := cmdRun.Run(); err != nil {
+		t.Fatalf("execCommand.Run failed: %v", err)
+	}
+
+	// Test Output
+	cmdOut := runner.CommandContext(ctx, "echo", "hello")
+	out, err := cmdOut.Output()
+	if err != nil || !strings.Contains(string(out), "hello") {
+		t.Fatalf("execCommand.Output failed: out=%q, err=%v", string(out), err)
+	}
+
+	// Test CombinedOutput
+	cmdComb := runner.CommandContext(ctx, "echo", "hello")
+	comb, err := cmdComb.CombinedOutput()
+	if err != nil || !strings.Contains(string(comb), "hello") {
+		t.Fatalf("execCommand.CombinedOutput failed: comb=%q, err=%v", string(comb), err)
+	}
+
+	// Test SetStdout & SetStderr
+	cmdW := runner.CommandContext(ctx, "echo", "hello")
+	var stdoutBuf, stderrBuf strings.Builder
+	cmdW.SetStdout(&stdoutBuf)
+	cmdW.SetStderr(&stderrBuf)
+	if err := cmdW.Run(); err != nil {
+		t.Fatalf("execCommand with SetStdout/SetStderr failed: %v", err)
+	}
+	if !strings.Contains(stdoutBuf.String(), "hello") {
+		t.Fatalf("stdoutBuf = %q, want hello", stdoutBuf.String())
+	}
+}
+func TestSetupLogging(t *testing.T) {
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	setupLogging(true)
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("expected LevelDebug to be enabled when debug=true")
+	}
+
+	setupLogging(false)
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("expected LevelDebug NOT to be enabled when debug=false")
 	}
 }

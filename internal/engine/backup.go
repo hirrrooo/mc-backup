@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,9 +13,11 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"log/slog"
 )
+
+const rconRetries = 5
+
+var rconRetryInterval = 10 * time.Second
 
 func sshBaseArgs(nas NASConfig) []string {
 	args := []string{"ssh"}
@@ -152,9 +155,6 @@ func isBackupDir(name string) bool {
 	}
 	return true
 }
-
-const rconRetries = 5
-const rconRetryInterval = 10 * time.Second
 
 type BackupEngine struct {
 	cfg        Config

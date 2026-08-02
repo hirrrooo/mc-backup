@@ -3,12 +3,16 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestWarnLegacyBackupDirOnce(t *testing.T) {
@@ -161,6 +165,9 @@ func TestSnapshotTimeAndWatchKey(t *testing.T) {
 		if !snapshotTime("20250611_1200").IsZero() {
 			t.Error("snapshotTime('20250611_1200') should be zero")
 		}
+		if !snapshotTime("20259999-9999").IsZero() {
+			t.Error("snapshotTime('20259999-9999') should be zero")
+		}
 		st := snapshotTime("/backups/20250611-1200")
 		if st.IsZero() {
 			t.Error("snapshotTime('/backups/20250611-1200') should not be zero")
@@ -258,4 +265,380 @@ func TestWaitForContainersNoServers(t *testing.T) {
 	cfgPath := filepath.Join(root, "config.toml")
 	d := NewDaemon(cfgPath, &Config{})
 	d.waitForContainers(context.Background(), d.ac.Load())
+}
+func TestDaemonRunContextCancelled(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\nbackup_interval = \"1ms\"\ninitial_delay = \"0s\"\n"), 0600)
+
+	// Write recent and due snapshots to test initial backup branches
+	writeLastSnapshotAt(cfgPath, "s_recent", "/local/a", "", time.Now())
+	writeLastSnapshotAt(cfgPath, "s_due", "/local/b", "", time.Now().Add(-200*time.Hour))
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	cfg.Servers = map[string]ServerConfig{
+		"s_recent": {Enabled: true, Target: "local"},
+		"s_due":    {Enabled: true, Target: "local"},
+	}
+	d := NewDaemon(cfgPath, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	err = d.RunContext(ctx)
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunContext unexpected error: %v", err)
+	}
+}
+func TestWaitForContainersCheckableReady(t *testing.T) {
+	tmp := t.TempDir()
+	watchDir := filepath.Join(tmp, "watch")
+	serverDir := filepath.Join(watchDir, "creative")
+	_ = os.MkdirAll(serverDir, 0755)
+
+	cfg := &Config{
+		Global: GlobalConfig{
+			InitialDelay: Duration{Duration: 1 * time.Second},
+		},
+		Watch: []WatchConfig{{Path: watchDir, Namespace: "mc"}},
+		Servers: map[string]ServerConfig{
+			"creative": {Enabled: true, ContainerName: "creative-mc-1"},
+		},
+	}
+
+	d := NewDaemon(filepath.Join(tmp, "config.toml"), cfg)
+
+	startTime := time.Now().Add(-1 * time.Hour).Format(time.RFC3339Nano)
+	runner := commandRunnerFunc(func(ctx context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte(startTime),
+		}
+	})
+
+	withCommandRunner(runner, func() {
+		d.waitForContainers(context.Background(), cfg)
+	})
+}
+func TestRunDiscovery(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n"), 0600)
+
+	cfg, _ := LoadConfig(cfgPath)
+	d := NewDaemon(cfgPath, cfg)
+
+	d.runDiscovery(context.Background())
+}
+func TestWaitForContainersUnreachableAndError(t *testing.T) {
+	tmp := t.TempDir()
+	watchDir := filepath.Join(tmp, "watch")
+	_ = os.MkdirAll(filepath.Join(watchDir, "creative"), 0755)
+
+	cfg := &Config{
+		Global: GlobalConfig{
+			InitialDelay: Duration{Duration: 1 * time.Millisecond},
+		},
+		Watch: []WatchConfig{{Path: watchDir, Namespace: "mc"}},
+		Servers: map[string]ServerConfig{
+			"creative": {Enabled: true, ContainerName: "creative-mc-1"},
+		},
+	}
+
+	d := NewDaemon(filepath.Join(tmp, "config.toml"), cfg)
+
+	// Runner that fails on inspect
+	runnerErr := commandRunnerFunc(func(ctx context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			err:              context.DeadlineExceeded,
+		}
+	})
+
+	withCommandRunner(runnerErr, func() {
+		d.waitForContainers(context.Background(), cfg)
+	})
+}
+
+func TestDiscoverSnapshotsNAS(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n"), 0600)
+
+	watchDir := filepath.Join(tmp, "watch")
+	_ = os.MkdirAll(filepath.Join(watchDir, "nas_server"), 0755)
+
+	cfg := &Config{
+		Watch: []WatchConfig{{Path: watchDir, Namespace: "mc"}},
+		NAS: NASConfig{
+			SSHUser:  "user",
+			SSHHost:  "nas.local",
+			DestRoot: "/backups",
+		},
+		Servers: map[string]ServerConfig{
+			"nas_server": {Enabled: true, Target: "nas"},
+		},
+	}
+
+	d := NewDaemon(cfgPath, cfg)
+
+	runner := commandRunnerFunc(func(ctx context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte("20240105-1200\n"),
+		}
+	})
+
+	withCommandRunner(runner, func() {
+		d.discoverSnapshots(context.Background(), cfg)
+	})
+
+	snaps := readLastSnapshots(cfgPath)
+	if entry, ok := snaps["nas_server"]; !ok || entry.NAS == "" {
+		t.Errorf("discoverSnapshots NAS = %v, want NAS snapshot set", snaps)
+	}
+}
+
+func TestRunDiscoveryWithNewServers(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n"), 0600)
+
+	watchDir := filepath.Join(tmp, "watch")
+	_ = os.MkdirAll(filepath.Join(watchDir, "discovered_server"), 0755)
+
+	cfg := &Config{
+		Watch: []WatchConfig{{Path: watchDir, Namespace: "mc"}},
+	}
+
+	d := NewDaemon(cfgPath, cfg)
+
+	oldTrigger := triggerDiscoveryBackup
+	called := false
+	triggerDiscoveryBackup = func(d *Daemon, ctx context.Context) {
+		called = true
+	}
+	t.Cleanup(func() { triggerDiscoveryBackup = oldTrigger })
+
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte("discovered_server-mc-1"),
+		}
+	})
+	withCommandRunner(runner, func() {
+		d.runDiscovery(context.Background())
+	})
+
+	if !called {
+		t.Error("expected triggerDiscoveryBackup to be called when new servers are discovered")
+	}
+}
+
+func TestRunBackupCycleCanceledAndFiltering(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n"), 0600)
+
+	cfg := &Config{
+		Servers: map[string]ServerConfig{
+			"disabled_server": {Enabled: false},
+			"other_server":    {Enabled: true},
+		},
+	}
+	d := NewDaemon(cfgPath, cfg)
+
+	// Filtered out by name
+	d.runBackupCycle(context.Background(), "nonexistent_server", false)
+
+	// Canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.runBackupCycle(ctx, "", false)
+}
+
+func TestDaemonRunSignal(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\nbackup_interval = \"100h\"\ninitial_delay = \"0s\"\n"), 0600)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	d := NewDaemon(cfgPath, cfg)
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		p, err := os.FindProcess(os.Getpid())
+		if err == nil {
+			_ = p.Signal(syscall.SIGINT)
+		}
+	}()
+
+	_ = d.Run()
+}
+func TestRunBackupCyclePauseIfNoPlayers(t *testing.T) {
+	tmp := t.TempDir()
+	oldRconInterval := rconRetryInterval
+	rconRetryInterval = 1 * time.Millisecond
+	t.Cleanup(func() { rconRetryInterval = oldRconInterval })
+	watchDir := filepath.Join(tmp, "watch")
+	_ = os.MkdirAll(filepath.Join(watchDir, "creative"), 0755)
+
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n"), 0600)
+
+	cfg := &Config{
+		Local: LocalConfig{DestRoot: filepath.Join(tmp, "local")},
+		Watch: []WatchConfig{{Path: watchDir, Namespace: "mc"}},
+		Servers: map[string]ServerConfig{
+			"creative": {
+				Enabled:          true,
+				Target:           "local",
+				PauseIfNoPlayers: true,
+			},
+		},
+	}
+
+	d := NewDaemon(cfgPath, cfg)
+
+	rsyncCalled := false
+	oldRsync := rsyncRunner
+	rsyncRunner = func(ctx context.Context, args []string, progress func(int64, int64)) error {
+		rsyncCalled = true
+		return nil
+	}
+	t.Cleanup(func() { rsyncRunner = oldRsync })
+
+	var executedCommands []string
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		cmdStr := name + " " + strings.Join(args, " ")
+		executedCommands = append(executedCommands, cmdStr)
+
+		if name == "docker" && len(args) > 0 {
+			if args[0] == "ps" {
+				return &mockOutputCommand{
+					recordingCommand: recordingCommand{name: name, args: args},
+					out:              []byte("creative-mc-1"),
+				}
+			}
+			if args[0] == "exec" {
+				for _, a := range args {
+					if a == "rcon-cli" {
+						return &mockOutputCommand{
+							recordingCommand: recordingCommand{name: name, args: args},
+							out:              []byte("There are 0 of a max of 20 players online:"),
+						}
+					}
+				}
+			}
+		}
+		return &recordingCommand{name: name, args: args}
+	})
+
+	withCommandRunner(runner, func() {
+		d.runBackupCycle(context.Background(), "creative", false)
+	})
+
+	if rsyncCalled {
+		t.Error("expected rsync NOT to be called when 0 players are online and PauseIfNoPlayers is true")
+	}
+
+	hasRconCount := false
+	for _, cmd := range executedCommands {
+		if strings.Contains(cmd, "rcon-cli") {
+			hasRconCount = true
+		}
+	}
+	if !hasRconCount {
+		t.Errorf("expected rcon-cli player count check in executed commands, got: %v", executedCommands)
+	}
+}
+
+func TestRunBackupCycleContainerNotRunningAndRconErrorAndFullRun(t *testing.T) {
+	tmp := t.TempDir()
+	oldRconInterval := rconRetryInterval
+	rconRetryInterval = 1 * time.Millisecond
+	t.Cleanup(func() { rconRetryInterval = oldRconInterval })
+	watchDir := filepath.Join(tmp, "watch")
+	_ = os.MkdirAll(filepath.Join(watchDir, "s1"), 0755)
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n"), 0600)
+
+	cfg := &Config{
+		Local: LocalConfig{DestRoot: filepath.Join(tmp, "local")},
+		Watch: []WatchConfig{{Path: watchDir, Namespace: "mc"}},
+		Servers: map[string]ServerConfig{
+			"s1": {
+				Enabled:          true,
+				Target:           "local",
+				PauseIfNoPlayers: true,
+			},
+		},
+	}
+
+	d := NewDaemon(cfgPath, cfg)
+
+	// Container not running -> skips
+	runnerNotRunning := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		return &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+			out:              []byte(""),
+		}
+	})
+	withCommandRunner(runnerNotRunning, func() {
+		d.runBackupCycle(context.Background(), "s1", false)
+	})
+
+	// RCON error -> skips
+	runnerRconErr := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		if name == "docker" && len(args) > 0 {
+			if args[0] == "ps" {
+				return &mockOutputCommand{
+					recordingCommand: recordingCommand{name: name, args: args},
+					out:              []byte("s1-mc-1"),
+				}
+			}
+			if args[0] == "exec" {
+				return &mockOutputCommand{
+					recordingCommand: recordingCommand{name: name, args: args},
+					err:              errors.New("rcon exec error"),
+				}
+			}
+		}
+		return &recordingCommand{name: name, args: args}
+	})
+	withCommandRunner(runnerRconErr, func() {
+		d.runBackupCycle(context.Background(), "s1", false)
+	})
+
+	// Full run with 1 player online -> backup proceeds
+	oldRsync := rsyncRunner
+	rsyncRunner = func(ctx context.Context, args []string, progress func(int64, int64)) error { return nil }
+	t.Cleanup(func() { rsyncRunner = oldRsync })
+
+	runner1Player := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		if name == "docker" && len(args) > 0 {
+			if args[0] == "ps" {
+				return &mockOutputCommand{
+					recordingCommand: recordingCommand{name: name, args: args},
+					out:              []byte("s1-mc-1"),
+				}
+			}
+			if args[0] == "exec" {
+				return &mockOutputCommand{
+					recordingCommand: recordingCommand{name: name, args: args},
+					out:              []byte("There are 1 of a max of 20 players online: player1"),
+				}
+			}
+		}
+		return &recordingCommand{name: name, args: args}
+	})
+	withCommandRunner(runner1Player, func() {
+		d.runBackupCycle(context.Background(), "s1", false)
+	})
 }

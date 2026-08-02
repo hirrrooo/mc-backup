@@ -420,3 +420,14 @@ func TestPruneLocalByCountReadErrorAndEdgeCases(t *testing.T) {
 		t.Errorf("snapshot should remain when keep=0, err=%v", err)
 	}
 }
+func TestPruneNASEdgeCases(t *testing.T) {
+	ctx := context.Background()
+	nas := NASConfig{SSHHost: "nas.local", SSHUser: "user"}
+
+	if err := pruneNASByDays(ctx, nas, "/root", "mc", "s1", 0); err != nil {
+		t.Errorf("pruneNASByDays(0) error = %v, want nil", err)
+	}
+	if err := pruneNASByCount(ctx, nas, "/root", "mc", "s1", 0); err != nil {
+		t.Errorf("pruneNASByCount(0) error = %v, want nil", err)
+	}
+}
