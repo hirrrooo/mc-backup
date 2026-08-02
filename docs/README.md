@@ -1,6 +1,12 @@
 # Documentation Index
 
-This directory contains repository evaluations, design specifications, and implementation plans for `mc-backup`.
+This directory contains repository evaluations, design specifications, implementation plans, and documentation links for `mc-backup`.
+
+---
+
+## User Documentation
+
+- [`../QUICKSTART.md`](../QUICKSTART.md) — Quick Start Manual with step-by-step Local and NAS setup examples, CLI commands, and restore procedures.
 
 ---
 

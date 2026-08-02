@@ -6,10 +6,12 @@ directories, auto-provisions config, and runs as a systemd service.
 
 ## Quick Start
 
+For detailed step-by-step instructions and complete configuration examples for both Local and NAS setups, see the **[Quick Start Manual](QUICKSTART.md)**.
+
 ```bash
 sudo make install
-nano ~/.config/mc-backup/config.toml
-systemctl start mc-backup
+sudo nano /etc/mc-backup/config.toml
+sudo systemctl start mc-backup
 mc-backup status
 ```
 
@@ -146,11 +148,10 @@ namespace = "minecraft"
 
 The daemon auto-discovers server directories under each watch path. Servers
 are disabled by default; enable one and set its RCON password:
-
 ```bash
-mc-backup config set server.survival.enabled true
-mc-backup config set server.survival.rcon_password hunter2
 mc-backup config set server.survival.target local
+mc-backup config set server.survival.rcon_password hunter2
+mc-backup config set server.survival.enabled true
 ```
 
 Manual server configuration:
