@@ -26,7 +26,7 @@ var usageOutput io.Writer = os.Stderr
 var repoURL = "" // set via -ldflags
 
 var osExecutable = os.Executable
-
+var newHTTPRequest = http.NewRequest
 var downloadFile = func(url, dest string) error {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(url)
@@ -124,33 +124,40 @@ func findConfig() string {
 	return defaultConfigPaths[0]
 }
 
+var osExit = os.Exit
+
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
+	osExit(runCLI(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func runCLI(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		printUsageTo(stderr)
+		return 1
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "run":
-		runCmd()
+		return runCmd(args[1:], stdout, stderr)
 	case "status":
-		statusCmd()
+		return statusCmd(args[1:], stdout, stderr)
 	case "config":
-		configCmd()
+		return configCmd(args[1:], stdout, stderr)
 	case "backup":
-		backupCmd()
+		return backupCmd(args[1:], stdout, stderr)
 	case "scan":
-		postCmd("scan")
+		return postCmd("scan", args[1:], stdout, stderr)
 	case "cancel":
-		postCmd("cancel")
+		return postCmd("cancel", args[1:], stdout, stderr)
 	case "update":
-		updateCmd()
+		return updateCmd(stdout, stderr)
 	case "version", "--version", "-v":
-		fmt.Printf("mc-backup %s\n", version)
+		fmt.Fprintf(stdout, "mc-backup %s\n", version)
+		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
-		printUsage()
-		os.Exit(1)
+		fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
+		printUsageTo(stderr)
+		return 1
 	}
 }
 
@@ -167,16 +174,19 @@ func readResponseBody(r io.Reader) ([]byte, error) {
 	return body, nil
 }
 
-func backupCmd() {
-	fs := flag.NewFlagSet("backup", flag.ExitOnError)
+func backupCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", findConfig(), "config file path")
 	offline := fs.Bool("offline", false, "backup without RCON (works when container is offline)")
-	_ = fs.Parse(os.Args[2:])
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
 
 	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "config error: %v\n", err)
+		return 1
 	}
 
 	server := fs.Arg(0)
@@ -191,10 +201,10 @@ func backupCmd() {
 		}
 	}
 
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s/backup", cfg.Global.ListenAddr), nil)
+	req, err := newHTTPRequest(http.MethodPost, fmt.Sprintf("http://%s/backup", cfg.Global.ListenAddr), nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "backup: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "backup: %v\n", err)
+		return 1
 	}
 	if cfg.Global.APIToken != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Global.APIToken)
@@ -209,8 +219,8 @@ func backupCmd() {
 	req.URL.RawQuery = q.Encode()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "backup failed: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "backup failed: %v\n", err)
+		return 1
 	}
 	defer resp.Body.Close()
 
@@ -218,43 +228,47 @@ func backupCmd() {
 	case resp.StatusCode == http.StatusOK:
 		body, err := readResponseBody(resp.Body)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "backup: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "backup: %v\n", err)
+			return 1
 		}
-		fmt.Printf("backup: %s\n", body)
+		fmt.Fprintf(stdout, "backup: %s\n", body)
+		return 0
 	case resp.StatusCode == http.StatusUnauthorized:
-		fmt.Fprintf(os.Stderr, "backup: unauthorized (check global.api_token)\n")
-		os.Exit(1)
+		fmt.Fprintf(stderr, "backup: unauthorized (check global.api_token)\n")
+		return 1
 	default:
-		fmt.Fprintf(os.Stderr, "backup: daemon returned %d\n", resp.StatusCode)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "backup: daemon returned %d\n", resp.StatusCode)
+		return 1
 	}
 }
 
-func postCmd(endpoint string) {
-	fs := flag.NewFlagSet(endpoint, flag.ExitOnError)
+func postCmd(endpoint string, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet(endpoint, flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", findConfig(), "config file path")
-	_ = fs.Parse(os.Args[2:])
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
 
 	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "config error: %v\n", err)
+		return 1
 	}
 
 	url := fmt.Sprintf("http://%s/%s", cfg.Global.ListenAddr, endpoint)
-	req, err := http.NewRequest(http.MethodPost, url, nil)
+	req, err := newHTTPRequest(http.MethodPost, url, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", endpoint, err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "%s: %v\n", endpoint, err)
+		return 1
 	}
 	if cfg.Global.APIToken != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Global.APIToken)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s failed: %v\n", endpoint, err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "%s failed: %v\n", endpoint, err)
+		return 1
 	}
 	defer resp.Body.Close()
 
@@ -262,24 +276,29 @@ func postCmd(endpoint string) {
 	case resp.StatusCode == http.StatusOK:
 		body, err := readResponseBody(resp.Body)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", endpoint, err)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "%s: %v\n", endpoint, err)
+			return 1
 		}
-		fmt.Printf("%s: %s\n", endpoint, body)
+		fmt.Fprintf(stdout, "%s: %s\n", endpoint, body)
+		return 0
 	case resp.StatusCode == http.StatusUnauthorized:
-		fmt.Fprintf(os.Stderr, "%s: unauthorized (check global.api_token)\n", endpoint)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "%s: unauthorized (check global.api_token)\n", endpoint)
+		return 1
 	case resp.StatusCode == http.StatusMethodNotAllowed:
-		fmt.Fprintf(os.Stderr, "%s: daemon not responding to POST\n", endpoint)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "%s: daemon not responding to POST\n", endpoint)
+		return 1
 	default:
-		fmt.Fprintf(os.Stderr, "%s: unexpected status %d\n", endpoint, resp.StatusCode)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "%s: unexpected status %d\n", endpoint, resp.StatusCode)
+		return 1
 	}
 }
 
 func printUsage() {
-	fmt.Fprintf(usageOutput, `mc-backup %s — Minecraft server backup daemon
+	printUsageTo(usageOutput)
+}
+
+func printUsageTo(w io.Writer) {
+	fmt.Fprintf(w, `mc-backup %s — Minecraft server backup daemon
 
 Usage: mc-backup <command> [flags]
 
@@ -311,14 +330,15 @@ Environment overrides: MC_BACKUP_<SECTION>_<KEY> (e.g. MC_BACKUP_GLOBAL_MAX_MBPS
 `, version)
 }
 
-func updateCmd() {
-	if err := runUpdate(); err != nil {
-		fmt.Fprintf(os.Stderr, "update failed: %v\n", err)
-		os.Exit(1)
+func updateCmd(stdout, stderr io.Writer) int {
+	if err := runUpdate(stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "update failed: %v\n", err)
+		return 1
 	}
+	return 0
 }
 
-func runUpdate() error {
+func runUpdate(stdout, stderr io.Writer) error {
 	if repoURL == "" {
 		return fmt.Errorf("update requires a built binary with embedded repo URL; use ./update.sh from the source repo instead")
 	}
@@ -330,7 +350,7 @@ func runUpdate() error {
 	tmpBin := execPath + ".new"
 
 	releaseURL := deriveReleaseURL(repoURL)
-	fmt.Printf("Downloading %s\n", releaseURL)
+	fmt.Fprintf(stdout, "Downloading %s\n", releaseURL)
 	if err := downloadFile(releaseURL, tmpBin); err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
@@ -360,78 +380,95 @@ func runUpdate() error {
 	return nil
 }
 
-func runCmd() {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
+var runDaemon = func(path string, cfg *engine.Config, debug bool) error {
+	d := engine.NewDaemon(path, cfg)
+	d.Debug = debug
+	return d.Run()
+}
+
+func runCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", findConfig(), "config file path")
 	debug := fs.Bool("debug", false, "enable debug logging")
-	_ = fs.Parse(os.Args[2:])
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
 
 	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "config error: %v\n", err)
+		return 1
 	}
 
-	d := engine.NewDaemon(*cfgPath, cfg)
-	d.Debug = *debug
-	if err := d.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
-		os.Exit(1)
+	if err := runDaemon(*cfgPath, cfg, *debug); err != nil {
+		fmt.Fprintf(stderr, "daemon error: %v\n", err)
+		return 1
 	}
+	return 0
 }
 
-func statusCmd() {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
+func statusCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", findConfig(), "config file path")
-	_ = fs.Parse(os.Args[2:])
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
 
 	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "status error: %v\n", err)
+		return 1
 	}
 
-	if err := engine.PrintDashboard(cfg.Global.ListenAddr); err != nil {
-		fmt.Fprintf(os.Stderr, "status error: %v\n", err)
-		os.Exit(1)
+	if err := engine.PrintDashboardTo(cfg.Global.ListenAddr, stdout); err != nil {
+		fmt.Fprintf(stderr, "status error: %v\n", err)
+		return 1
 	}
+	return 0
 }
 
-func configCmd() {
-	fs := flag.NewFlagSet("config", flag.ExitOnError)
+func configCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("config", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", findConfig(), "config file path")
-	_ = fs.Parse(os.Args[2:])
-
-	args := fs.Args()
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: mc-backup config <get|set> <key> [value]")
-		os.Exit(1)
+	if err := fs.Parse(args); err != nil {
+		return 1
 	}
 
-	switch args[0] {
+	cmdArgs := fs.Args()
+	if len(cmdArgs) < 1 {
+		fmt.Fprintln(stderr, "usage: mc-backup config <get|set> <key> [value]")
+		return 1
+	}
+
+	switch cmdArgs[0] {
 	case "get":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: mc-backup config get <key>")
-			os.Exit(1)
+		if len(cmdArgs) < 2 {
+			fmt.Fprintln(stderr, "usage: mc-backup config get <key>")
+			return 1
 		}
 		cfg, err := engine.LoadConfig(*cfgPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "config error: %v\n", err)
+			return 1
 		}
-		val := engine.GetConfigValue(cfg, args[1])
-		fmt.Println(val)
+		val := engine.GetConfigValue(cfg, cmdArgs[1])
+		fmt.Fprintln(stdout, val)
+		return 0
 	case "set":
-		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: mc-backup config set <key> <value>")
-			os.Exit(1)
+		if len(cmdArgs) < 3 {
+			fmt.Fprintln(stderr, "usage: mc-backup config set <key> <value>")
+			return 1
 		}
-		if err := engine.SetConfigValue(*cfgPath, args[1], args[2]); err != nil {
-			fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-			os.Exit(1)
+		if err := engine.SetConfigValue(*cfgPath, cmdArgs[1], cmdArgs[2]); err != nil {
+			fmt.Fprintf(stderr, "config error: %v\n", err)
+			return 1
 		}
+		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "unknown config action: %s\n", args[0])
-		os.Exit(1)
+		fmt.Fprintf(stderr, "unknown config action: %s\n", cmdArgs[0])
+		return 1
 	}
 }
