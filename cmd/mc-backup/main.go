@@ -386,6 +386,23 @@ var runDaemon = func(path string, cfg *engine.Config, debug bool) error {
 	return d.Run()
 }
 
+func ensureDefaultConfig(path string, stdout io.Writer) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create config directory %s: %w", dir, err)
+	}
+	sshKeysDir := filepath.Join(dir, "ssh", "keys")
+	if err := os.MkdirAll(sshKeysDir, 0700); err != nil {
+		return fmt.Errorf("create ssh keys directory %s: %w", sshKeysDir, err)
+	}
+	cfg := engine.DefaultConfig()
+	if err := engine.SaveConfig(path, cfg); err != nil {
+		return fmt.Errorf("save default config to %s: %w", path, err)
+	}
+	fmt.Fprintf(stdout, "provisioned default configuration at %s\n", path)
+	return nil
+}
+
 func runCmd(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -397,8 +414,17 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 
 	cfg, err := engine.LoadConfig(*cfgPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "config error: %v\n", err)
-		return 1
+		if _, statErr := os.Stat(*cfgPath); os.IsNotExist(statErr) {
+			if err := ensureDefaultConfig(*cfgPath, stdout); err != nil {
+				fmt.Fprintf(stderr, "failed to provision default config: %v\n", err)
+				return 1
+			}
+			cfg, err = engine.LoadConfig(*cfgPath)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "config error: %v\n", err)
+			return 1
+		}
 	}
 
 	if err := runDaemon(*cfgPath, cfg, *debug); err != nil {

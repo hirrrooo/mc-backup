@@ -1067,3 +1067,77 @@ func TestVerifyChecksumCopyError(t *testing.T) {
 		t.Fatal("expected verifyChecksum error on directory path")
 	}
 }
+func TestRunCmdMissingConfigAutoProvisions(t *testing.T) {
+	tmpDir := t.TempDir()
+	missingCfg := filepath.Join(tmpDir, "subDir", "config.toml")
+
+	oldRunDaemon := runDaemon
+	daemonCalled := false
+	runDaemon = func(path string, cfg *engine.Config, debug bool) error {
+		daemonCalled = true
+		return nil
+	}
+	t.Cleanup(func() { runDaemon = oldRunDaemon })
+
+	var out, errOut bytes.Buffer
+	code := runCmd([]string{"--config", missingCfg}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("runCmd exit code = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	if !daemonCalled {
+		t.Error("expected runDaemon to be called after provisioning")
+	}
+
+	if _, err := os.Stat(missingCfg); err != nil {
+		t.Errorf("expected missingCfg %s to be created: %v", missingCfg, err)
+	}
+
+	sshKeysDir := filepath.Join(tmpDir, "subDir", "ssh", "keys")
+	info, err := os.Stat(sshKeysDir)
+	if err != nil {
+		t.Fatalf("expected ssh keys dir %s: %v", sshKeysDir, err)
+	}
+	if !info.IsDir() {
+		t.Errorf("expected %s to be a directory", sshKeysDir)
+	}
+
+	if !strings.Contains(out.String(), "provisioned default configuration") {
+		t.Errorf("stdout missing provisioning message: %s", out.String())
+	}
+}
+
+func TestRunCmdMalformedConfigFailsWithoutOverwrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	malformedCfg := filepath.Join(tmpDir, "config.toml")
+	content := []byte("invalid_toml = [")
+	_ = os.WriteFile(malformedCfg, content, 0600)
+
+	var out, errOut bytes.Buffer
+	code := runCmd([]string{"--config", malformedCfg}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("runCmd exit code = %d, want 1", code)
+	}
+
+	afterContent, err := os.ReadFile(malformedCfg)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(afterContent) != string(content) {
+		t.Errorf("malformed config was overwritten! got %q, want %q", afterContent, content)
+	}
+}
+
+func TestStatusCmdMissingConfigDoesNotProvision(t *testing.T) {
+	tmpDir := t.TempDir()
+	missingCfg := filepath.Join(tmpDir, "config.toml")
+
+	var out, errOut bytes.Buffer
+	code := statusCmd([]string{"--config", missingCfg}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("statusCmd exit code = %d, want 1", code)
+	}
+
+	if _, err := os.Stat(missingCfg); !os.IsNotExist(err) {
+		t.Errorf("statusCmd should NOT provision config file %s", missingCfg)
+	}
+}
