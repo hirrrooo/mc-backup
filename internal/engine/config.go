@@ -104,6 +104,7 @@ func DefaultConfig() *Config {
 		},
 		NAS: NASConfig{
 			SSHPort: 22,
+			SSHKey:  "/etc/mc-backup/ssh/keys/id_ed25519",
 		},
 		Retention: RetentionConfig{
 			PruneDays: 7,

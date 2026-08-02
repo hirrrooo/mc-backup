@@ -2132,3 +2132,333 @@ func TestWriteLastSnapshotHelper(t *testing.T) {
 		t.Fatalf("writeLastSnapshot failed: %#v", entry)
 	}
 }
+func TestWatchConfigReloadsAndWarns(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	initialContent := []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\nbackup_interval = \"10m\"\n")
+	if err := os.WriteFile(cfgPath, initialContent, 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	var ac atomicConfig
+	ac.Store(cfg)
+
+	if err := watchConfig(cfgPath, &ac); err != nil {
+		t.Fatalf("watchConfig failed: %v", err)
+	}
+
+	// Modify file to trigger reload
+	time.Sleep(50 * time.Millisecond)
+	updatedContent := []byte("[global]\nlisten_addr = \"127.0.0.1:9090\"\nbackup_interval = \"20m\"\n")
+	if err := os.WriteFile(cfgPath, updatedContent, 0600); err != nil {
+		t.Fatalf("WriteFile update failed: %v", err)
+	}
+
+	// Poll ac.Load() until updated
+	deadline := time.Now().Add(3 * time.Second)
+	reloaded := false
+	for time.Now().Before(deadline) {
+		current := ac.Load()
+		if current != nil && current.Global.BackupInterval.Duration == 20*time.Minute {
+			reloaded = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !reloaded {
+		t.Error("watchConfig did not reload updated config file within timeout")
+	}
+
+	// Test watchConfig invalid directory error
+	if err := watchConfig(filepath.Join(tmp, "nonexistent_dir", "sub", "config.toml"), &ac); err == nil {
+		t.Error("expected watchConfig error for nonexistent directory")
+	}
+}
+
+func TestConfigSaveAndSplitErrorPaths(t *testing.T) {
+	tmp := t.TempDir()
+	parentFile := filepath.Join(tmp, "not_a_dir")
+	_ = os.WriteFile(parentFile, []byte("file"), 0600)
+
+	cfg := DefaultConfig()
+
+	// SaveConfig to invalid directory parent failure
+	badPath := filepath.Join(parentFile, "file.toml")
+	if err := SaveConfig(badPath, cfg); err == nil {
+		t.Error("expected SaveConfig error on invalid parent directory")
+	}
+
+	// SaveAutoServers to invalid directory parent failure
+	if err := SaveAutoServers(badPath, map[string]ServerConfig{"test": {Enabled: true}}); err == nil {
+		t.Error("expected SaveAutoServers error on invalid parent directory")
+	}
+
+	// writeLastSnapshotAt error path
+	writeLastSnapshotAt(filepath.Join(parentFile, "last.json"), "creative", "loc", "nas", time.Now())
+}
+
+func TestGetAndSetConfigValueEdgeCases(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n"), 0600)
+
+	cfg, _ := LoadConfig(cfgPath)
+
+	// GetConfigValue unknown keys
+	if got := GetConfigValue(cfg, "unknown.key"); got != "" {
+		t.Errorf("GetConfigValue unknown.key = %q, want empty", got)
+	}
+	if got := GetConfigValue(cfg, "global.unknown"); got != "" {
+		t.Errorf("GetConfigValue global.unknown = %q, want empty", got)
+	}
+	if got := GetConfigValue(cfg, "local.unknown"); got != "" {
+		t.Errorf("GetConfigValue local.unknown = %q, want empty", got)
+	}
+	if got := GetConfigValue(cfg, "nas.unknown"); got != "" {
+		t.Errorf("GetConfigValue nas.unknown = %q, want empty", got)
+	}
+	if got := GetConfigValue(cfg, "retention.unknown"); got != "" {
+		t.Errorf("GetConfigValue retention.unknown = %q, want empty", got)
+	}
+	if got := GetConfigValue(cfg, "server.unknown.key"); got != "" {
+		t.Errorf("GetConfigValue server.unknown.key = %q, want empty", got)
+	}
+
+	// SetConfigValue invalid keys
+	if err := SetConfigValue(cfgPath, "singlekey", "val"); err == nil {
+		t.Error("expected SetConfigValue error for key without dots")
+	}
+	if err := SetConfigValue(cfgPath, "unknownsection.key", "val"); err == nil {
+		t.Error("expected SetConfigValue error for unknown section")
+	}
+}
+func TestWatchConfigInvalidTOMLReload(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n"), 0600)
+
+	cfg, _ := LoadConfig(cfgPath)
+	var ac atomicConfig
+	ac.Store(cfg)
+
+	_ = watchConfig(cfgPath, &ac)
+
+	// Write invalid TOML to trigger LoadConfig error in watchConfig
+	time.Sleep(50 * time.Millisecond)
+	_ = os.WriteFile(cfgPath, []byte("invalid toml content === {"), 0600)
+	time.Sleep(100 * time.Millisecond)
+}
+
+func TestParseServerEnvKeyAndGetterEdgeCases(t *testing.T) {
+	s, k, ok := parseServerEnvKey("creative_enabled")
+	if !ok || s != "creative" || k != "enabled" {
+		t.Errorf("parseServerEnvKey = (%q, %q, %v), want (creative, enabled, true)", s, k, ok)
+	}
+	s2, k2, ok2 := parseServerEnvKey("INVALID_KEY")
+	if ok2 || s2 != "" || k2 != "" {
+		t.Errorf("parseServerEnvKey INVALID_KEY = (%q, %q, %v), want empty false", s2, k2, ok2)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Servers["creative"] = ServerConfig{
+		Enabled:          true,
+		Target:           "local",
+		PauseIfNoPlayers: true,
+	}
+
+	if got := GetConfigValue(cfg, "global.max_mbps"); got != "40.0" {
+		t.Errorf("GetConfigValue global.max_mbps = %q, want 40.0", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.enabled"); got != "true" {
+		t.Errorf("GetConfigValue server.creative.enabled = %q, want true", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.pause_if_no_players"); got != "true" {
+		t.Errorf("GetConfigValue server.creative.pause_if_no_players = %q, want true", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.target"); got != "local" {
+		t.Errorf("GetConfigValue server.creative.target = %q, want local", got)
+	}
+
+	if err := SetConfigValue("/nonexistent/file.toml", "global.listen_addr", "127.0.0.1:8080"); err == nil {
+		t.Error("expected SetConfigValue error on missing file")
+	}
+}
+
+func TestApplyEnvOverridesErrorsAndMoreGetters(t *testing.T) {
+	t.Setenv("MC_BACKUP_GLOBAL_MAX_MBPS", "notafloat")
+	t.Setenv("MC_BACKUP_NAS_SSH_PORT", "notanint")
+	cfg := DefaultConfig()
+	applyEnvOverrides(cfg) // invalid values ignored safely
+	s, k, ok := parseServerEnvKey("_enabled")
+	if ok || s != "" || k != "" {
+		t.Errorf("parseServerEnvKey empty name = (%q, %q, %v), want empty false", s, k, ok)
+	}
+
+	ex := []string{"*.log"}
+	cfg.Global.APIToken = "secret123"
+	cfg.Global.BackupInterval = Duration{Duration: 10 * time.Minute}
+	cfg.Global.InitialDelay = Duration{Duration: 1 * time.Minute}
+	cfg.Servers["creative"] = ServerConfig{
+		ContainerName: "creative-mc",
+		RconPassword:  "pass123",
+		DataDir:       "/mc/data",
+		Excludes:      &ex,
+	}
+
+	if got := GetConfigValue(cfg, "global.api_token"); got != "secret123" {
+		t.Errorf("GetConfigValue global.api_token = %q, want secret123", got)
+	}
+	if got := GetConfigValue(cfg, "global.backup_interval"); got != "10m0s" {
+		t.Errorf("GetConfigValue global.backup_interval = %q, want 10m0s", got)
+	}
+	if got := GetConfigValue(cfg, "global.initial_delay"); got != "1m0s" {
+		t.Errorf("GetConfigValue global.initial_delay = %q, want 1m0s", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.container_name"); got != "creative-mc" {
+		t.Errorf("GetConfigValue server.creative.container_name = %q, want creative-mc", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.rcon_password"); got != "pass123" {
+		t.Errorf("GetConfigValue server.creative.rcon_password = %q, want pass123", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.data_dir"); got != "/mc/data" {
+		t.Errorf("GetConfigValue server.creative.data_dir = %q, want /mc/data", got)
+	}
+	if got := GetConfigValue(cfg, "server.creative.excludes"); got != "*.log" {
+		t.Errorf("GetConfigValue server.creative.excludes = %q, want *.log", got)
+	}
+	tmp := t.TempDir()
+	corruptPath := filepath.Join(tmp, "cfg.toml")
+	autoPath := filepath.Join(tmp, "cfg-auto.toml")
+	_ = os.WriteFile(autoPath, []byte("corrupt toml ==="), 0600)
+	names := loadAutoServerNames(corruptPath)
+	if len(names) != 0 {
+		t.Errorf("loadAutoServerNames corrupt = %v, want empty", names)
+	}
+}
+func TestValidateErrorPathsAndNormalizeDestRoot(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// Empty ListenAddr
+	cfg.Global.ListenAddr = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected Validate error on empty ListenAddr")
+	}
+
+	// Invalid Target
+	cfg = DefaultConfig()
+	cfg.Global.ListenAddr = "127.0.0.1:8080"
+	cfg.Servers["s1"] = ServerConfig{Enabled: true, Target: "invalid_target"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected Validate error on invalid server target")
+	}
+
+	// Local target without dest_root
+	cfg = DefaultConfig()
+	cfg.Global.ListenAddr = "127.0.0.1:8080"
+	cfg.Local.DestRoot = ""
+	cfg.Servers["s1"] = ServerConfig{Enabled: true, Target: "local"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected Validate error on local target without dest_root")
+	}
+
+	// normalizeDestRoot ///
+	if got := normalizeDestRoot("///"); got != "/" {
+		t.Errorf("normalizeDestRoot(///) = %q, want /", got)
+	}
+}
+
+func TestLoadConfigFileCorruptAutoTomlAndSaveSplitWithAutoServers(t *testing.T) {
+	tmp := t.TempDir()
+	mainPath := filepath.Join(tmp, "main.toml")
+	autoPath := filepath.Join(tmp, "main-auto.toml")
+
+	_ = os.WriteFile(mainPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n"), 0600)
+	_ = os.WriteFile(autoPath, []byte("invalid toml { ==="), 0600)
+
+	if _, err := LoadConfig(mainPath); err == nil {
+		t.Error("expected LoadConfig error when -auto.toml is corrupted")
+	}
+
+	// Valid auto servers split save
+	_ = os.WriteFile(mainPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n[local]\ndest_root = \"/backups\"\n"), 0600)
+	_ = os.WriteFile(autoPath, []byte("[server.autoserver]\nenabled = true\ntarget = \"local\"\n"), 0600)
+
+	cfg, err := LoadConfig(mainPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if err := saveSplit(mainPath, cfg); err != nil {
+		t.Fatalf("saveSplit failed: %v", err)
+	}
+}
+func TestSaveSplitRemovesAutoFileWhenNoAutoServers(t *testing.T) {
+	tmp := t.TempDir()
+	mainPath := filepath.Join(tmp, "main.toml")
+	autoPath := filepath.Join(tmp, "main-auto.toml")
+
+	_ = os.WriteFile(mainPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\n[local]\ndest_root = \"/backups\"\n"), 0600)
+	_ = os.WriteFile(autoPath, []byte("[server.autoserver]\nenabled = true\ntarget = \"local\"\n"), 0600)
+
+	cfg, err := LoadConfig(mainPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	// Remove autoserver from cfg and saveSplit
+	delete(cfg.Servers, "autoserver")
+	if err := saveSplit(mainPath, cfg); err != nil {
+		t.Fatalf("saveSplit failed: %v", err)
+	}
+
+	if _, err := os.Stat(autoPath); !os.IsNotExist(err) {
+		t.Errorf("expected autoPath %s to be removed when no auto servers remain", autoPath)
+	}
+}
+func TestDefaultConfigSSHKey(t *testing.T) {
+	cfg := DefaultConfig()
+	const wantDefaultKey = "/etc/mc-backup/ssh/keys/id_ed25519"
+	if cfg.NAS.SSHKey != wantDefaultKey {
+		t.Errorf("DefaultConfig().NAS.SSHKey = %q; want %q", cfg.NAS.SSHKey, wantDefaultKey)
+	}
+
+	tmp := t.TempDir()
+	cfgPathDefault := filepath.Join(tmp, "default.toml")
+	_ = os.WriteFile(cfgPathDefault, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n[nas]\nssh_user = \"backup\"\nssh_host = \"nas.local\"\ndest_root = \"/volume1/backups\"\n"), 0600)
+	loadedDefault, err := LoadConfig(cfgPathDefault)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if loadedDefault.NAS.SSHKey != wantDefaultKey {
+		t.Errorf("loaded config without ssh_key = %q; want default %q", loadedDefault.NAS.SSHKey, wantDefaultKey)
+	}
+
+	cfgPathCustom := filepath.Join(tmp, "custom.toml")
+	const customKey = "/custom/path/key"
+	_ = os.WriteFile(cfgPathCustom, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n[nas]\nssh_user = \"backup\"\nssh_host = \"nas.local\"\nssh_key = \"/custom/path/key\"\ndest_root = \"/volume1/backups\"\n"), 0600)
+	loadedCustom, err := LoadConfig(cfgPathCustom)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if loadedCustom.NAS.SSHKey != customKey {
+		t.Errorf("loaded config with custom ssh_key = %q; want %q", loadedCustom.NAS.SSHKey, customKey)
+	}
+
+	args := sshBaseArgs(loadedDefault.NAS)
+	hasKeyArg := false
+	for i, arg := range args {
+		if arg == "-i" && i+1 < len(args) && args[i+1] == wantDefaultKey {
+			hasKeyArg = true
+			break
+		}
+	}
+	if !hasKeyArg {
+		t.Errorf("sshBaseArgs(%+v) missing -i %s, got: %v", loadedDefault.NAS, wantDefaultKey, args)
+	}
+}

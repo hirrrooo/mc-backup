@@ -149,29 +149,29 @@ docker start survival-mc-1
 
 NAS backups transfer snapshots over SSH/rsync to a remote NAS server.
 
-### Step 1: Set Up Passwordless SSH for Root
+### Step 1: Set Up Passwordless SSH Key
 
-Since the systemd daemon runs as `root`, generate an SSH key for `root` and copy it to the NAS user (`backup@nas.local`):
+Generate a dedicated SSH key for the `mc-backup` service under `/etc/mc-backup/ssh/keys` and copy it to the NAS user (`backup@nas.local`):
 
 ```bash
-# Ensure root SSH directory exists with restricted permissions
-sudo install -d -m 700 /root/.ssh
+# Ensure SSH key directory exists with restricted permissions
+sudo install -d -m 700 /etc/mc-backup/ssh/keys
 
-# Generate SSH key for root
-sudo ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519_mcbackup -N ""
+# Generate SSH key used by mc-backup service
+sudo ssh-keygen -t ed25519 -f /etc/mc-backup/ssh/keys/id_ed25519 -N ""
 
 # Copy SSH public key to NAS
-sudo ssh-copy-id -i /root/.ssh/id_ed25519_mcbackup.pub backup@nas.local
+sudo ssh-copy-id -i /etc/mc-backup/ssh/keys/id_ed25519.pub backup@nas.local
 
-# Test SSH connection as root
-sudo ssh -i /root/.ssh/id_ed25519_mcbackup backup@nas.local "echo SSH connection successful"
-
+# Test SSH connection
+sudo ssh -i /etc/mc-backup/ssh/keys/id_ed25519 backup@nas.local "echo SSH connection successful"
+```
 ### Step 2: Create the NAS Sentinel File (`.nas-ready`)
 
 `mc-backup` requires a `.nas-ready` sentinel file inside `nas.dest_root` on the remote NAS. This safety feature prevents `mc-backup` from writing to an unmounted directory or offline storage.
 
 ```bash
-sudo ssh -i /root/.ssh/id_ed25519_mcbackup backup@nas.local "mkdir -p /volume1/backups && touch /volume1/backups/.nas-ready"
+sudo ssh -i /etc/mc-backup/ssh/keys/id_ed25519 backup@nas.local "mkdir -p /volume1/backups && touch /volume1/backups/.nas-ready"
 ```
 
 ### Step 3: Configure `/etc/mc-backup/config.toml` for NAS
@@ -190,7 +190,7 @@ excludes = ["*.jar", "cache", "logs", "*.tmp"]
 ssh_user = "backup"
 ssh_host = "nas.local"
 ssh_port = 22
-ssh_key = "/root/.ssh/id_ed25519_mcbackup"
+ssh_key = "/etc/mc-backup/ssh/keys/id_ed25519"
 dest_root = "/volume1/backups"
 
 [retention]
@@ -234,13 +234,13 @@ To restore a snapshot stored on the remote NAS:
 docker stop survival-mc-1
 
 # 2. Restore world data over SSH using rsync
-sudo rsync -av -e "ssh -i /root/.ssh/id_ed25519_mcbackup" backup@nas.local:/volume1/backups/minecraft/survival/<timestamp>/ /opt/minecraft/servers/docker/servers/survival/
+sudo rsync -av -e "ssh -i /etc/mc-backup/ssh/keys/id_ed25519" backup@nas.local:/volume1/backups/minecraft/survival/<timestamp>/ /opt/minecraft/servers/docker/servers/survival/
 
 # 3. Restart the Minecraft container
 docker start survival-mc-1
 ```
 
-> **Note**: Each snapshot contains the `mc-data/` folder. Syncing `<timestamp>/` into the server directory restores `mc-data/` while leaving root server files (such as `docker-compose.yml` or `.env`) untouched. You can also target `mc-data/` directly with `sudo rsync -av -e "ssh -i /root/.ssh/id_ed25519_mcbackup" backup@nas.local:/volume1/backups/minecraft/survival/<timestamp>/mc-data/ /opt/minecraft/servers/docker/servers/survival/mc-data/`.
+> **Note**: Each snapshot contains the `mc-data/` folder. Syncing `<timestamp>/` into the server directory restores `mc-data/` while leaving root server files (such as `docker-compose.yml` or `.env`) untouched. You can also target `mc-data/` directly with `sudo rsync -av -e "ssh -i /etc/mc-backup/ssh/keys/id_ed25519" backup@nas.local:/volume1/backups/minecraft/survival/<timestamp>/mc-data/ /opt/minecraft/servers/docker/servers/survival/mc-data/`.
 ## 5. Service Management & Commands
 
 ### Managing the Systemd Service

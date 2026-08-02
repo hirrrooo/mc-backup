@@ -13,7 +13,7 @@ dest_root = "/var/lib/mc-backup"
 ssh_user = "backup"
 ssh_host = "nas.local"
 ssh_port = 22
-ssh_key = "~/.ssh/id_ed25519"
+ssh_key = "/etc/mc-backup/ssh/keys/id_ed25519"
 dest_root = "/volume1/backups"
 
 [retention]

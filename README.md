@@ -108,7 +108,7 @@ dest_root = "/var/lib/mc-backup"
 [nas]
 ssh_user = "myuser"
 ssh_host = "192.168.1.50"
-ssh_key = "~/.ssh/id_ed25519"
+ssh_key = "/etc/mc-backup/ssh/keys/id_ed25519"
 dest_root = "/volume1/backups"
 
 [[watch]]
@@ -134,7 +134,7 @@ dest_root = "/var/lib/mc-backup"
 ssh_user = "backup"
 ssh_host = "nas.local"
 ssh_port = 22
-ssh_key = "~/.ssh/id_ed25519"
+ssh_key = "/etc/mc-backup/ssh/keys/id_ed25519"
 dest_root = "/volume1/backups"
 
 [retention]
@@ -237,14 +237,15 @@ Note: `mc-backup update` requires appropriate `sudo` permissions for `systemctl`
 Generate and install a key when using NAS targets:
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_backup
-ssh-copy-id -i ~/.ssh/id_ed25519_backup backup@nas.local
+sudo install -d -m 700 /etc/mc-backup/ssh/keys
+sudo ssh-keygen -t ed25519 -f /etc/mc-backup/ssh/keys/id_ed25519 -N ""
+sudo ssh-copy-id -i /etc/mc-backup/ssh/keys/id_ed25519.pub backup@nas.local
 ```
 
 Create the sentinel once, directly in the configured NAS root:
 
 ```bash
-ssh backup@nas.local "touch /volume1/backups/.nas-ready"
+sudo ssh -i /etc/mc-backup/ssh/keys/id_ed25519 backup@nas.local "touch /volume1/backups/.nas-ready"
 ```
 
 The sentinel is required for NAS writes and NAS retention operations. Local

@@ -21,6 +21,7 @@ lint:
 
 install: build
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(CONFDIR)" "$(USER_CONFDIR)"
+	install -d -m 700 "$(DESTDIR)$(CONFDIR)/ssh/keys"
 	install -m 755 $(BINARY) "$(DESTDIR)$(BINDIR)/$(BINARY)"
 	[ -f "$(USER_CONFDIR)/config.toml" ] || install -m 644 config.example.toml "$(USER_CONFDIR)/config.toml"
 	[ -f "$(DESTDIR)$(CONFDIR)/config.toml" ] || install -m 644 config.example.toml "$(DESTDIR)$(CONFDIR)/config.toml"
