@@ -547,13 +547,13 @@ func TestUpdateInvariants(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetBin := filepath.Join(tmpDir, "mc-backup")
 	tmpBin := targetBin + ".new"
-	_ = os.WriteFile(targetBin, []byte("old-bin"), 0755)
+	_ = os.WriteFile(targetBin, []byte("old-bin"), 0600)
 
 	osExecutable = func() (string, error) { return targetBin, nil }
 
 	// Checksum failure MUST remove tmpBin (.new file)
 	downloadFile = func(url, dest string) error {
-		return os.WriteFile(dest, []byte("downloaded-new-bin"), 0755)
+		return os.WriteFile(dest, []byte("downloaded-new-bin"), 0600)
 	}
 	verifyChecksum = func(binaryPath, checksumURL string) error {
 		return fmt.Errorf("checksum mismatch test")
