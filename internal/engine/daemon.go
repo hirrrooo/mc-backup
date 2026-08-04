@@ -433,7 +433,8 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string, offli
 			}
 
 			if s.Server.PauseIfNoPlayers {
-				out, err := rconOutput(ctx, container, s.Server.RconPassword, "list")
+				rconPass := resolveRconPassword(s.Server, s.Watch, s.Name)
+				out, err := rconOutput(ctx, container, rconPass, "list")
 				if err != nil {
 					slog.Warn("cannot query player count, skipping backup", "server", s.Name, "error", err)
 					continue

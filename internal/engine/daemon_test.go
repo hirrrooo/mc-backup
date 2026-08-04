@@ -642,3 +642,66 @@ func TestRunBackupCycleContainerNotRunningAndRconErrorAndFullRun(t *testing.T) {
 		d.runBackupCycle(context.Background(), "s1", false)
 	})
 }
+
+func TestDaemonRunBackupCycleAutodetectsRconPassword(t *testing.T) {
+	tmp := t.TempDir()
+	watchDir := filepath.Join(tmp, "watch")
+	mcDataDir := filepath.Join(watchDir, "cone-create", "mc-data")
+	if err := os.MkdirAll(mcDataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mcDataDir, "server.properties"), []byte("rcon.password=player_check_pass\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(tmp, "config.toml")
+	_ = os.WriteFile(cfgPath, []byte("[global]\n"), 0600)
+
+	cfg := &Config{
+		Local: LocalConfig{DestRoot: filepath.Join(tmp, "local")},
+		Watch: []WatchConfig{{Path: watchDir, Namespace: "mc"}},
+		Servers: map[string]ServerConfig{
+			"cone-create": {
+				Enabled:          true,
+				Target:           "local",
+				PauseIfNoPlayers: true,
+				RconPassword:     "",
+			},
+		},
+	}
+
+	d := NewDaemon(cfgPath, cfg)
+
+	var recordedCmds []*mockOutputCommand
+	runnerInterceptor := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		mc := &mockOutputCommand{
+			recordingCommand: recordingCommand{name: name, args: args},
+		}
+		if name == "docker" && len(args) > 0 {
+			if args[0] == "ps" {
+				mc.out = []byte("cone-create-mc-1")
+			} else if args[0] == "exec" {
+				mc.out = []byte("There are 0 of a max of 20 players online:")
+			}
+		}
+		recordedCmds = append(recordedCmds, mc)
+		return mc
+	})
+
+	withCommandRunner(runnerInterceptor, func() {
+		d.runBackupCycle(context.Background(), "cone-create", false)
+	})
+
+	var capturedPass string
+	for _, cmd := range recordedCmds {
+		for _, e := range cmd.env {
+			if strings.HasPrefix(e, "RCON_PASSWORD=") {
+				capturedPass = strings.TrimPrefix(e, "RCON_PASSWORD=")
+			}
+		}
+	}
+
+	if capturedPass != "player_check_pass" {
+		t.Fatalf("captured password = %q, want %q", capturedPass, "player_check_pass")
+	}
+}
