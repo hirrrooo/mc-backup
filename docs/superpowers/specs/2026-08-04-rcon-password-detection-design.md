@@ -14,8 +14,9 @@ This design introduces dynamic detection of RCON passwords directly from the ser
    - When `rcon_password` is empty (`""`), `mc-backup` dynamically reads `rcon.password` from `<data_dir>/server.properties` right before issuing RCON commands.
 2. **`server.properties` Parsing**:
    - Reads `<data_dir>/server.properties` line by line.
-   - Ignores comment lines starting with `#` or `!`.
-   - Parses key-value pair `rcon.password=<value>`.
+   - Trims leading/trailing whitespace from each line before checking comment prefixes (`#` or `!`).
+   - Parses key-value pairs using `strings.SplitN(line, "=", 2)` to handle values containing `=` characters.
+   - Trims whitespace from keys and values, looking for key `rcon.password`.
    - Returns the trimmed password value, or `""` if absent or unreadable.
 3. **Data Directory Resolution**:
    - Uses `s.DataDir` if explicitly configured.
@@ -33,5 +34,5 @@ This design introduces dynamic detection of RCON passwords directly from the ser
   - Update player count query in `runBackupCycle` to use `resolveRconPassword`.
 
 ## Testing Strategy
-* Unit test for `readServerPropertiesPassword` with various `server.properties` content (valid password, empty password, missing key, comments, missing file).
+* Unit test for `readServerPropertiesPassword` with various `server.properties` content (valid password, empty password, missing key, comments, missing file, `=` in password, indented comments).
 * Unit test for `resolveRconPassword` confirming explicit config overrides `server.properties`, and empty config falls back to `server.properties`.
