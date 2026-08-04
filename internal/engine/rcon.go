@@ -1,13 +1,15 @@
 package engine
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"log/slog"
 )
 
 func rconCommand(container, cmd string) []string {
@@ -69,4 +71,37 @@ func countPlayers(output string) int {
 		return -1
 	}
 	return n
+}
+
+func readServerPropertiesPassword(dataDir string) string {
+	filePath := filepath.Join(dataDir, "server.properties")
+	file, err := os.Open(filePath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 && strings.TrimSpace(parts[0]) == "rcon.password" {
+			return strings.TrimSpace(parts[1])
+		}
+	}
+	return ""
+}
+
+func resolveRconPassword(s ServerConfig, w WatchConfig, serverName string) string {
+	if s.RconPassword != "" {
+		return s.RconPassword
+	}
+	dataDir := s.DataDir
+	if dataDir == "" {
+		dataDir = filepath.Join(w.Path, serverName, "mc-data")
+	}
+	return readServerPropertiesPassword(dataDir)
 }

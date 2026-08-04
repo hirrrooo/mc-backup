@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -137,5 +139,80 @@ func TestRunRconRetriesFailure(t *testing.T) {
 
 	if attempts != 1 {
 		t.Fatalf("expected 1 attempt before context cancel return, got %d", attempts)
+	}
+}
+
+func TestReadServerPropertiesPassword(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Missing file returns empty string
+	if got := readServerPropertiesPassword(tmpDir); got != "" {
+		t.Errorf("expected empty string for missing file, got %q", got)
+	}
+
+	// File with missing rcon.password key returns empty string
+	noKeyContent := "# Minecraft server properties\nserver-port=25565\nenable-rcon=true\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "server.properties"), []byte(noKeyContent), 0644); err != nil {
+		t.Fatalf("failed to write server.properties: %v", err)
+	}
+	if got := readServerPropertiesPassword(tmpDir); got != "" {
+		t.Errorf("expected empty string for missing rcon.password key, got %q", got)
+	}
+
+	// File with comments, spaces, values with '=' signs, and rcon.password
+	validContent := `
+# Minecraft server properties
+! Java properties comment
+   
+server-port=25565
+  rcon.password = my=secret=pass  
+enable-rcon=true
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "server.properties"), []byte(validContent), 0644); err != nil {
+		t.Fatalf("failed to write server.properties: %v", err)
+	}
+	if got := readServerPropertiesPassword(tmpDir); got != "my=secret=pass" {
+		t.Errorf("expected %q, got %q", "my=secret=pass", got)
+	}
+}
+
+func TestResolveRconPassword(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+	serverName := "myserver"
+	defaultDataDir := filepath.Join(watchDir, serverName, "mc-data")
+	if err := os.MkdirAll(defaultDataDir, 0755); err != nil {
+		t.Fatalf("failed to create default data dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultDataDir, "server.properties"), []byte("rcon.password=filepass\n"), 0644); err != nil {
+		t.Fatalf("failed to write server.properties: %v", err)
+	}
+
+	customDataDir := filepath.Join(tmpDir, "custom-data")
+	if err := os.MkdirAll(customDataDir, 0755); err != nil {
+		t.Fatalf("failed to create custom data dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(customDataDir, "server.properties"), []byte("rcon.password=custompass\n"), 0644); err != nil {
+		t.Fatalf("failed to write server.properties: %v", err)
+	}
+
+	w := WatchConfig{Path: watchDir}
+
+	// Case 1: Explicit config password overrides server.properties
+	sExplicit := ServerConfig{RconPassword: "configpass", DataDir: defaultDataDir}
+	if got := resolveRconPassword(sExplicit, w, serverName); got != "configpass" {
+		t.Errorf("expected explicit config password to override, got %q", got)
+	}
+
+	// Case 2: Empty config falls back to server.properties in default dataDir
+	sFallback := ServerConfig{}
+	if got := resolveRconPassword(sFallback, w, serverName); got != "filepass" {
+		t.Errorf("expected fallback to default dataDir server.properties, got %q", got)
+	}
+
+	// Case 3: Custom DataDir is respected when resolving server.properties
+	sCustomDir := ServerConfig{DataDir: customDataDir}
+	if got := resolveRconPassword(sCustomDir, w, serverName); got != "custompass" {
+		t.Errorf("expected custom DataDir server.properties password, got %q", got)
 	}
 }
