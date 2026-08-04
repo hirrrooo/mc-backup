@@ -921,3 +921,47 @@ func TestRsyncScannerErrors(t *testing.T) {
 	// streamRsyncProgress error on broken reader
 	streamRsyncProgress(errTestReader{}, nil)
 }
+
+func TestBackupServerAutodetectsRconPassword(t *testing.T) {
+	tmpWatch := filepath.Join(t.TempDir(), "watch")
+	propsDir := filepath.Join(tmpWatch, "cone-create", "mc-data")
+	if err := os.MkdirAll(propsDir, 0755); err != nil {
+		t.Fatalf("failed to create propsDir: %v", err)
+	}
+	propsFile := filepath.Join(propsDir, "server.properties")
+	if err := os.WriteFile(propsFile, []byte("rcon.password=detected_pass\n"), 0644); err != nil {
+		t.Fatalf("failed to write server.properties: %v", err)
+	}
+
+	localRoot := t.TempDir()
+	runner := &recordingRunner{}
+	previousRsyncRunner := rsyncRunner
+	rsyncRunner = func(_ context.Context, _ []string, _ func(int64, int64)) error {
+		return nil
+	}
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	watch := WatchConfig{Path: tmpWatch, Namespace: "test-ns"}
+	server := ServerConfig{Target: "local", RconPassword: ""}
+
+	withCommandRunner(runner, func() {
+		_, _, err := NewBackupEngine(Config{
+			Local: LocalConfig{DestRoot: localRoot},
+		}).BackupServer(context.Background(), watch, "cone-create", server, "", "", false)
+		if err != nil {
+			t.Fatalf("BackupServer failed: %v", err)
+		}
+	})
+
+	foundDetectedPass := false
+	for _, cmd := range runner.commands {
+		for _, env := range cmd.env {
+			if env == "RCON_PASSWORD=detected_pass" {
+				foundDetectedPass = true
+			}
+		}
+	}
+	if !foundDetectedPass {
+		t.Errorf("expected RCON_PASSWORD=detected_pass in commands, got commands: %#v", runner.commands)
+	}
+}

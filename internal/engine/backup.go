@@ -183,7 +183,8 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 	}
 
 	if !offline {
-		if err := runRcon(ctx, container, server.RconPassword, "save-off", rconRetries, rconRetryInterval); err != nil {
+		rconPass := resolveRconPassword(server, watch, serverName)
+		if err := runRcon(ctx, container, rconPass, "save-off", rconRetries, rconRetryInterval); err != nil {
 			return "", false, fmt.Errorf("save-off: %w", err)
 		}
 
@@ -191,7 +192,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 			slog.Info("re-enabling autosave", "server", serverName)
 			detachedCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
-			if err := runRcon(detachedCtx, container, server.RconPassword, "save-on", rconRetries, rconRetryInterval); err != nil {
+			if err := runRcon(detachedCtx, container, rconPass, "save-on", rconRetries, rconRetryInterval); err != nil {
 				saveOnErr := fmt.Errorf("FATAL: save-on failed for %s: %w", serverName, err)
 				slog.Error(saveOnErr.Error())
 				if rerr == nil {
@@ -202,7 +203,7 @@ func (be *BackupEngine) BackupServer(ctx context.Context, watch WatchConfig, ser
 			}
 		}()
 
-		if err := runRcon(ctx, container, server.RconPassword, "save-all flush", rconRetries, rconRetryInterval); err != nil {
+		if err := runRcon(ctx, container, rconPass, "save-all flush", rconRetries, rconRetryInterval); err != nil {
 			return "", false, fmt.Errorf("save-all flush: %w", err)
 		}
 	} else {
