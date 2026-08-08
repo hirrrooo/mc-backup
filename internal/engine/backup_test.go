@@ -965,7 +965,7 @@ func TestBackupServerAutodetectsRconPassword(t *testing.T) {
 		t.Fatalf("failed to create propsDir: %v", err)
 	}
 	propsFile := filepath.Join(propsDir, "server.properties")
-	if err := os.WriteFile(propsFile, []byte("rcon.password=detected_pass\n"), 0644); err != nil {
+	if err := os.WriteFile(propsFile, []byte("rcon.password=detected_pass\n"), 0600); err != nil {
 		t.Fatalf("failed to write server.properties: %v", err)
 	}
 

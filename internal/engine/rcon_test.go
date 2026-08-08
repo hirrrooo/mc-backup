@@ -152,7 +152,7 @@ func TestReadServerPropertiesPassword(t *testing.T) {
 
 	// File with missing rcon.password key returns empty string
 	noKeyContent := "# Minecraft server properties\nserver-port=25565\nenable-rcon=true\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, "server.properties"), []byte(noKeyContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "server.properties"), []byte(noKeyContent), 0600); err != nil {
 		t.Fatalf("failed to write server.properties: %v", err)
 	}
 	if got := readServerPropertiesPassword(tmpDir); got != "" {
@@ -168,7 +168,7 @@ server-port=25565
   rcon.password = my=secret=pass  
 enable-rcon=true
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "server.properties"), []byte(validContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "server.properties"), []byte(validContent), 0600); err != nil {
 		t.Fatalf("failed to write server.properties: %v", err)
 	}
 	if got := readServerPropertiesPassword(tmpDir); got != "my=secret=pass" {
@@ -184,7 +184,7 @@ func TestResolveRconPassword(t *testing.T) {
 	if err := os.MkdirAll(defaultDataDir, 0755); err != nil {
 		t.Fatalf("failed to create default data dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(defaultDataDir, "server.properties"), []byte("rcon.password=filepass\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(defaultDataDir, "server.properties"), []byte("rcon.password=filepass\n"), 0600); err != nil {
 		t.Fatalf("failed to write server.properties: %v", err)
 	}
 
@@ -192,7 +192,7 @@ func TestResolveRconPassword(t *testing.T) {
 	if err := os.MkdirAll(customDataDir, 0755); err != nil {
 		t.Fatalf("failed to create custom data dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(customDataDir, "server.properties"), []byte("rcon.password=custompass\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(customDataDir, "server.properties"), []byte("rcon.password=custompass\n"), 0600); err != nil {
 		t.Fatalf("failed to write server.properties: %v", err)
 	}
 
