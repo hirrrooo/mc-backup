@@ -1079,6 +1079,83 @@ func TestExcludesResolution(t *testing.T) {
 	if resGlobalEmpty == nil || len(resGlobalEmpty) != 0 {
 		t.Errorf("explicit empty global excludes = %v (len %d), want empty slice (len 0)", resGlobalEmpty, len(resGlobalEmpty))
 	}
+
+	// 6. Additive excludes with default global excludes (+bluemap, distant horizons)
+	additiveList := []string{"+bluemap/*", "distant horizons/*"}
+	resAdditiveDefault := cfgDefault.ResolveServerExcludes(ServerConfig{Excludes: &additiveList})
+	wantAdditiveDefault := []string{"*.jar", "cache", "logs", "*.tmp", "bluemap/*", "distant horizons/*"}
+	if strings.Join(resAdditiveDefault, ",") != strings.Join(wantAdditiveDefault, ",") {
+		t.Errorf("additive excludes with default global = %v, want %v", resAdditiveDefault, wantAdditiveDefault)
+	}
+
+	// 7. Additive excludes with configured global excludes (+ prefix and standalone + marker)
+	additiveStandalone := []string{"+", "bluemap/*", "+distant horizons/*"}
+	resAdditiveGlobal := cfgGlobal.ResolveServerExcludes(ServerConfig{Excludes: &additiveStandalone})
+	wantAdditiveGlobal := []string{"*.bak", "temp", "bluemap/*", "distant horizons/*"}
+	if strings.Join(resAdditiveGlobal, ",") != strings.Join(wantAdditiveGlobal, ",") {
+		t.Errorf("additive excludes with custom global = %v, want %v", resAdditiveGlobal, wantAdditiveGlobal)
+	}
+
+	// 8. Server excludes without + replace global excludes
+	replacementList := []string{"bluemap/*", "distant horizons/*"}
+	resReplacement := cfgGlobal.ResolveServerExcludes(ServerConfig{Excludes: &replacementList})
+	if strings.Join(resReplacement, ",") != "bluemap/*,distant horizons/*" {
+		t.Errorf("replacement server excludes = %v, want [bluemap/*, distant horizons/*]", resReplacement)
+	}
+}
+
+func TestWildcardFolderBlacklistAutoConfigRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+
+[nas]
+ssh_user = "backup"
+ssh_host = "nas.local"
+dest_root = "/volume1/backups"
+`)
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	excludesList := []string{"+bluemap/*", "distant horizons/*", "plugins/bluemap"}
+	autoServers := map[string]ServerConfig{
+		"paper": {
+			Enabled:  true,
+			Target:   "nas",
+			Excludes: &excludesList,
+		},
+	}
+
+	if err := SaveAutoServers(cfgPath, autoServers); err != nil {
+		t.Fatalf("SaveAutoServers: %v", err)
+	}
+
+	reloaded, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	sPaper, ok := reloaded.Servers["paper"]
+	if !ok {
+		t.Fatalf("paper server missing in reloaded config")
+	}
+	if sPaper.Excludes == nil {
+		t.Fatalf("paper server excludes should not be nil")
+	}
+	wantExcludes := []string{"+bluemap/*", "distant horizons/*", "plugins/bluemap"}
+	if strings.Join(*sPaper.Excludes, ",") != strings.Join(wantExcludes, ",") {
+		t.Errorf("reloaded excludes = %v, want %v", *sPaper.Excludes, wantExcludes)
+	}
+
+	resolved := reloaded.ResolveServerExcludes(sPaper)
+	wantResolved := []string{"*.jar", "cache", "logs", "*.tmp", "bluemap/*", "distant horizons/*", "plugins/bluemap"}
+	if strings.Join(resolved, ",") != strings.Join(wantResolved, ",") {
+		t.Errorf("resolved excludes = %v, want %v", resolved, wantResolved)
+	}
 }
 
 func TestExcludesTOMLRoundTripAndNilPreservation(t *testing.T) {

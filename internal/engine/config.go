@@ -124,6 +124,28 @@ func (c *Config) ResolveGlobalExcludes() []string {
 
 func (c *Config) ResolveServerExcludes(server ServerConfig) []string {
 	if server.Excludes != nil {
+		hasAdditive := false
+		for _, item := range *server.Excludes {
+			trimmed := strings.TrimSpace(item)
+			if trimmed == "+" || strings.HasPrefix(trimmed, "+") {
+				hasAdditive = true
+				break
+			}
+		}
+		if hasAdditive {
+			base := c.ResolveGlobalExcludes()
+			res := make([]string, 0, len(base)+len(*server.Excludes))
+			res = append(res, base...)
+			for _, item := range *server.Excludes {
+				trimmed := strings.TrimSpace(item)
+				trimmed = strings.TrimPrefix(trimmed, "+")
+				trimmed = strings.TrimSpace(trimmed)
+				if trimmed != "" {
+					res = append(res, trimmed)
+				}
+			}
+			return res
+		}
 		res := make([]string, len(*server.Excludes))
 		copy(res, *server.Excludes)
 		return res

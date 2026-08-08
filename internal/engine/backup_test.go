@@ -184,6 +184,42 @@ func TestNASRsyncArgs(t *testing.T) {
 		t.Error("missing SSH keepalive options")
 	}
 }
+func TestFolderBlacklistRsyncArgs(t *testing.T) {
+	excludes := []string{"*.jar", "cache", "logs", "*.tmp", "bluemap/*", "distant horizons/*", "plugins/bluemap"}
+
+	// Local rsync args
+	localArgs := localRsyncArgs("/data/mc/paper", "/backups/prev", "/backups/curr", excludes)
+	for _, ex := range excludes {
+		expectedFlag := "--exclude=" + ex
+		found := false
+		for _, arg := range localArgs {
+			if arg == expectedFlag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("localRsyncArgs missing flag %q; args = %v", expectedFlag, localArgs)
+		}
+	}
+
+	// NAS rsync args
+	nas := NASConfig{SSHUser: "backup", SSHHost: "nas.local", SSHPort: 22}
+	nasArgs := nasRsyncArgs("/data/mc/paper", "/backups/prev", "/backups/curr", nas, 10.0, excludes)
+	for _, ex := range excludes {
+		expectedFlag := "--exclude=" + ex
+		found := false
+		for _, arg := range nasArgs {
+			if arg == expectedFlag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("nasRsyncArgs missing flag %q; args = %v", expectedFlag, nasArgs)
+		}
+	}
+}
 
 func TestNoLinkDestFirstRun(t *testing.T) {
 	args := localRsyncArgs("/data", "", "/backups/local", nil)

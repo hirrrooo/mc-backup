@@ -323,7 +323,8 @@ config actions:
 Config keys:
   target      Per-server backup target: "local" or "nas"
   local.dest_root      Root directory for local snapshots
-
+  server.<name>.excludes Exclude patterns/folders (e.g. "bluemap, distant horizons", or "+bluemap/*" to add to global excludes)
+  global.excludes Global exclude patterns (default: *.jar, cache, logs, *.tmp)
 Config files: /etc/mc-backup/config.toml, ~/.config/mc-backup/config.toml
 Environment overrides: MC_BACKUP_<SECTION>_<KEY> (e.g. MC_BACKUP_GLOBAL_MAX_MBPS=20)
 
