@@ -1030,7 +1030,7 @@ hot_root = "/hot"
 hot_prune_count = 5
 hot_prune_days = 3
 `)
-	if err := os.WriteFile(cfgPath, content, 0644); err != nil {
+	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
 		t.Fatalf("failed to write config: %v", err)
 	}
 

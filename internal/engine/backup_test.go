@@ -1057,7 +1057,7 @@ func TestTieredBackupHotCopyIsAtomic(t *testing.T) {
 
 		rsyncRunner = func(_ context.Context, args []string, _ func(int64, int64)) error {
 			dest := strings.TrimSuffix(args[len(args)-1], "/")
-			_ = os.WriteFile(filepath.Join(dest, "stale.tmp"), []byte("stale"), 0644)
+			_ = os.WriteFile(filepath.Join(dest, "stale.tmp"), []byte("stale"), 0600)
 			return errors.New("hot rsync disk full")
 		}
 
@@ -1154,7 +1154,7 @@ func TestTieredBackupReenablesAutosaveBeforeOffload(t *testing.T) {
 func TestOffloadSnapshotLocalPromotesAtomically(t *testing.T) {
 	coldRoot := t.TempDir()
 	hotSnap := t.TempDir()
-	_ = os.WriteFile(filepath.Join(hotSnap, "world.dat"), []byte("data"), 0644)
+	_ = os.WriteFile(filepath.Join(hotSnap, "world.dat"), []byte("data"), 0600)
 
 	cfg := Config{
 		Local: LocalConfig{DestRoot: coldRoot},
@@ -1177,7 +1177,7 @@ func TestOffloadSnapshotLocalPromotesAtomically(t *testing.T) {
 		dest := strings.TrimSuffix(args[len(args)-1], "/")
 		if _, err := os.Stat(dest); err == nil {
 			inProgressExistedDuringOffload = true
-			_ = os.WriteFile(filepath.Join(dest, "marker.txt"), []byte("marker"), 0644)
+			_ = os.WriteFile(filepath.Join(dest, "marker.txt"), []byte("marker"), 0600)
 		}
 		finalDir := strings.TrimSuffix(dest, ".inprogress")
 		if _, err := os.Stat(finalDir); err == nil {
@@ -1225,13 +1225,13 @@ func TestOffloadSnapshotFailureRemovesInProgress(t *testing.T) {
 
 	rsyncRunner = func(_ context.Context, args []string, _ func(int64, int64)) error {
 		dest := strings.TrimSuffix(args[len(args)-1], "/")
-		_ = os.WriteFile(filepath.Join(dest, "partial.tmp"), []byte("partial"), 0644)
+		_ = os.WriteFile(filepath.Join(dest, "partial.tmp"), []byte("partial"), 0600)
 		return errors.New("offload connection lost")
 	}
 
 	prevCold := filepath.Join(coldRoot, "mc", "s1", "20260101-1000")
 	_ = os.MkdirAll(prevCold, 0755)
-	_ = os.WriteFile(filepath.Join(prevCold, "prev.dat"), []byte("prev"), 0644)
+	_ = os.WriteFile(filepath.Join(prevCold, "prev.dat"), []byte("prev"), 0600)
 
 	_, err := offloadSnapshot(context.Background(), cfg, watch, "s1", hotSnap, "20260101-1100", "local", prevCold, nil)
 	if err == nil {
