@@ -280,12 +280,23 @@ func loadConfigFile(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 
+	autoNames := loadAutoServerNames(path)
+
 	normalized := make(map[string]ServerConfig, len(cfg.Servers))
 	for k, v := range cfg.Servers {
-		normalized[strings.ToLower(k)] = v
+		lowerK := strings.ToLower(k)
+		s := v
+		if autoNames[lowerK] {
+			if s.Target == "" {
+				s.Target = "nas"
+			}
+			if s.ContainerName == "" {
+				s.ContainerName = fallbackContainerName(lowerK)
+			}
+		}
+		normalized[lowerK] = s
 	}
 	cfg.Servers = normalized
-
 	cfg.Local.DestRoot = normalizeDestRoot(cfg.Local.DestRoot)
 	cfg.NAS.DestRoot = normalizeDestRoot(cfg.NAS.DestRoot)
 
@@ -516,6 +527,12 @@ func saveSplit(path string, cfg *Config) (err error) {
 
 func writeAutoServersTo(f io.Writer, servers map[string]ServerConfig) {
 	for name, s := range servers {
+		if s.Target == "" {
+			s.Target = "nas"
+		}
+		if s.ContainerName == "" {
+			s.ContainerName = fallbackContainerName(name)
+		}
 		fmt.Fprintf(f, "\n[server.%s]\n", name)
 		fmt.Fprintf(f, "enabled = %v\n", s.Enabled)
 		fmt.Fprintf(f, "target = %q\n", s.Target)

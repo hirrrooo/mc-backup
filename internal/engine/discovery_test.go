@@ -285,6 +285,9 @@ func TestDiscoverServersAllBranches(t *testing.T) {
 		if newServers[0].Server.ContainerName != "new_server-mc-1" {
 			t.Errorf("container name = %q, want new_server-mc-1", newServers[0].Server.ContainerName)
 		}
+		if newServers[0].Server.Target != "nas" {
+			t.Errorf("target = %q, want nas", newServers[0].Server.Target)
+		}
 	})
 }
 

@@ -2539,3 +2539,43 @@ func TestDefaultConfigSSHKey(t *testing.T) {
 		t.Errorf("sshBaseArgs(%+v) missing -i %s, got: %v", loadedDefault.NAS, wantDefaultKey, args)
 	}
 }
+func TestMissingAutoConfigParametersDefaulted(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	autoPath := autoServersPath(cfgPath)
+
+	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:47990\"\n[nas]\nssh_user = \"user\"\nssh_host = \"host\"\ndest_root = \"/backups\"\n"), 0600)
+	_ = os.WriteFile(autoPath, []byte("[server.minimalserver]\nenabled = true\n"), 0600)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	s, ok := cfg.Servers["minimalserver"]
+	if !ok {
+		t.Fatalf("expected minimalserver in cfg.Servers")
+	}
+	if s.Target != "nas" {
+		t.Errorf("expected Target = %q for auto server with missing target, got %q", "nas", s.Target)
+	}
+	if s.ContainerName != "minimalserver-mc-1" {
+		t.Errorf("expected ContainerName = %q for auto server with missing container_name, got %q", "minimalserver-mc-1", s.ContainerName)
+	}
+
+	if err := SaveAutoServers(cfgPath, cfg.Servers); err != nil {
+		t.Fatalf("SaveAutoServers failed: %v", err)
+	}
+
+	autoBytes, err := os.ReadFile(autoPath)
+	if err != nil {
+		t.Fatalf("ReadFile autoPath failed: %v", err)
+	}
+	autoStr := string(autoBytes)
+	if !strings.Contains(autoStr, `target = "nas"`) {
+		t.Errorf("auto-config file missing default target = \"nas\":\n%s", autoStr)
+	}
+	if !strings.Contains(autoStr, `container_name = "minimalserver-mc-1"`) {
+		t.Errorf("auto-config file missing default container_name = \"minimalserver-mc-1\":\n%s", autoStr)
+	}
+}

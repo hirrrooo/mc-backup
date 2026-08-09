@@ -179,6 +179,7 @@ func discoverServersWithWarning(watches []WatchConfig, knownServers map[string]S
 			containerName := detectContainerName(filepath.Join(w.Path, name), name)
 			newServer := ServerConfig{
 				Enabled:       false,
+				Target:        "nas",
 				ContainerName: containerName,
 			}
 			slog.Info("discovery: provisioning new server",
