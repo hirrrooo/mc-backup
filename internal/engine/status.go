@@ -37,13 +37,33 @@ func (jt *JobTracker) Add(key string, info *JobInfo) {
 	jt.jobs[key] = info
 	jt.mu.Unlock()
 }
-
 func (jt *JobTracker) Remove(key string) {
 	jt.mu.Lock()
 	delete(jt.jobs, key)
 	jt.mu.Unlock()
 }
 
+func (jt *JobTracker) UpdateIfSnapshot(key, snapshot string, info *JobInfo) bool {
+	jt.mu.Lock()
+	defer jt.mu.Unlock()
+	current, exists := jt.jobs[key]
+	if !exists || current.Snapshot == snapshot {
+		jt.jobs[key] = info
+		return true
+	}
+	return false
+}
+
+func (jt *JobTracker) RemoveIfSnapshot(key, snapshot string) bool {
+	jt.mu.Lock()
+	defer jt.mu.Unlock()
+	current, exists := jt.jobs[key]
+	if exists && current.Snapshot == snapshot {
+		delete(jt.jobs, key)
+		return true
+	}
+	return false
+}
 func (jt *JobTracker) Snapshot() map[string]*JobInfo {
 	jt.mu.RLock()
 	defer jt.mu.RUnlock()

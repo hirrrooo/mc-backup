@@ -40,6 +40,7 @@ type GlobalConfig struct {
 	ListenAddr     string    `toml:"listen_addr"`
 	BackupInterval Duration  `toml:"backup_interval"`
 	InitialDelay   Duration  `toml:"initial_delay"`
+	TransferDelay  Duration  `toml:"transfer_delay"`
 	MaxMBps        float64   `toml:"max_mbps"`
 	APIToken       string    `toml:"api_token"`
 	Excludes       *[]string `toml:"excludes"`
@@ -55,11 +56,14 @@ type NASConfig struct {
 
 type LocalConfig struct {
 	DestRoot string `toml:"dest_root"`
+	HotRoot  string `toml:"hot_root"`
 }
 
 type RetentionConfig struct {
-	PruneDays  int `toml:"prune_days"`
-	PruneCount int `toml:"prune_count"`
+	PruneDays     int `toml:"prune_days"`
+	PruneCount    int `toml:"prune_count"`
+	HotPruneDays  int `toml:"hot_prune_days"`
+	HotPruneCount int `toml:"hot_prune_count"`
 }
 
 type WatchConfig struct {
@@ -107,7 +111,8 @@ func DefaultConfig() *Config {
 			SSHKey:  "/etc/mc-backup/ssh/keys/id_ed25519",
 		},
 		Retention: RetentionConfig{
-			PruneDays: 7,
+			PruneDays:     7,
+			HotPruneCount: 2,
 		},
 		Servers: make(map[string]ServerConfig),
 	}
@@ -174,7 +179,11 @@ func parseExcludesValue(val string) *[]string {
 }
 
 func normalizeTarget(t string) string {
-	return strings.ToLower(strings.TrimSpace(t))
+	trimmed := strings.ToLower(strings.TrimSpace(t))
+	if trimmed == "tiered" || trimmed == "two-tier" {
+		return "tiered-nas"
+	}
+	return trimmed
 }
 
 func (c *Config) Validate() error {
@@ -190,6 +199,15 @@ func (c *Config) Validate() error {
 	if c.Global.InitialDelay.Duration < 0 {
 		return fmt.Errorf("invalid config: global.initial_delay must be non-negative")
 	}
+	if c.Global.TransferDelay.Duration < 0 {
+		return fmt.Errorf("invalid config: global.transfer_delay must be non-negative")
+	}
+	if c.Retention.HotPruneCount < 0 {
+		return fmt.Errorf("invalid config: retention.hot_prune_count must be non-negative")
+	}
+	if c.Retention.HotPruneDays < 0 {
+		return fmt.Errorf("invalid config: retention.hot_prune_days must be non-negative")
+	}
 	host, portStr, err := net.SplitHostPort(c.Global.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("invalid config: malformed global.listen_addr %q: %w", c.Global.ListenAddr, err)
@@ -203,42 +221,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid config: non-loopback global.listen_addr %q requires global.api_token to be set", c.Global.ListenAddr)
 	}
 
-	hasNASTarget := false
-	hasLocalTarget := false
 	for name, s := range c.Servers {
 		if !s.Enabled {
 			continue
 		}
-		t := normalizeTarget(s.Target)
-		switch t {
-		case "", "nas":
-			hasNASTarget = true
-		case "local":
-			hasLocalTarget = true
-		default:
-			return fmt.Errorf("invalid config: server %q has invalid target %q (must be \"nas\" or \"local\")", name, s.Target)
-		}
-	}
-
-	if hasNASTarget {
-		var missing []string
-		if strings.TrimSpace(c.NAS.SSHHost) == "" {
-			missing = append(missing, "ssh_host")
-		}
-		if strings.TrimSpace(c.NAS.SSHUser) == "" {
-			missing = append(missing, "ssh_user")
-		}
-		if strings.TrimSpace(c.NAS.DestRoot) == "" {
-			missing = append(missing, "dest_root")
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("invalid config: NAS target enabled but missing required fields in [nas] section (%s)", strings.Join(missing, ", "))
-		}
-	}
-
-	if hasLocalTarget {
-		if strings.TrimSpace(c.Local.DestRoot) == "" {
-			return fmt.Errorf("invalid config: local target enabled but missing required field local.dest_root")
+		if _, err := resolveBackupTarget(name, s, c.Local, c.NAS); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
 		}
 	}
 
@@ -298,11 +286,11 @@ func loadConfigFile(path string) (*Config, error) {
 	}
 	cfg.Servers = normalized
 	cfg.Local.DestRoot = normalizeDestRoot(cfg.Local.DestRoot)
+	cfg.Local.HotRoot = normalizeDestRoot(cfg.Local.HotRoot)
 	cfg.NAS.DestRoot = normalizeDestRoot(cfg.NAS.DestRoot)
 
 	return cfg, nil
 }
-
 func normalizeDestRoot(root string) string {
 	trimmed := strings.TrimRight(root, "/")
 	if trimmed == "" && root != "" {
@@ -311,16 +299,55 @@ func normalizeDestRoot(root string) string {
 	return trimmed
 }
 
-func resolveBackupTarget(serverName string, server ServerConfig, local LocalConfig) (string, error) {
+func resolveBackupTarget(serverName string, server ServerConfig, local LocalConfig, nas NASConfig) (string, error) {
 	target := normalizeTarget(server.Target)
 	if target == "" {
 		target = "nas"
 	}
-	if target != "local" && target != "nas" {
-		return "", fmt.Errorf("server %q has invalid backup target %q (want %q or %q)", serverName, server.Target, "local", "nas")
+	if target != "local" && target != "nas" && target != "tiered-local" && target != "tiered-nas" {
+		return "", fmt.Errorf("server %q has invalid backup target %q (want \"local\", \"nas\", \"tiered-local\", or \"tiered-nas\")", serverName, server.Target)
 	}
-	if target == "local" && strings.TrimSpace(local.DestRoot) == "" {
-		return "", fmt.Errorf("server %q target %q requires local.dest_root", serverName, target)
+
+	var missing []string
+	switch target {
+	case "local":
+		if strings.TrimSpace(local.DestRoot) == "" {
+			missing = append(missing, "local.dest_root")
+		}
+	case "nas":
+		if strings.TrimSpace(nas.SSHHost) == "" {
+			missing = append(missing, "nas.ssh_host")
+		}
+		if strings.TrimSpace(nas.SSHUser) == "" {
+			missing = append(missing, "nas.ssh_user")
+		}
+		if strings.TrimSpace(nas.DestRoot) == "" {
+			missing = append(missing, "nas.dest_root")
+		}
+	case "tiered-local":
+		if strings.TrimSpace(local.HotRoot) == "" {
+			missing = append(missing, "local.hot_root")
+		}
+		if strings.TrimSpace(local.DestRoot) == "" {
+			missing = append(missing, "local.dest_root")
+		}
+	case "tiered-nas":
+		if strings.TrimSpace(local.HotRoot) == "" {
+			missing = append(missing, "local.hot_root")
+		}
+		if strings.TrimSpace(nas.SSHHost) == "" {
+			missing = append(missing, "nas.ssh_host")
+		}
+		if strings.TrimSpace(nas.SSHUser) == "" {
+			missing = append(missing, "nas.ssh_user")
+		}
+		if strings.TrimSpace(nas.DestRoot) == "" {
+			missing = append(missing, "nas.dest_root")
+		}
+	}
+
+	if len(missing) > 0 {
+		return "", fmt.Errorf("server %q target %q requires %s", serverName, target, strings.Join(missing, ", "))
 	}
 	return target, nil
 }
@@ -638,6 +665,16 @@ func applyEnvOverrides(cfg *Config) {
 			continue
 		}
 		parts := strings.Split(strings.ToLower(kv[0]), "_")
+		if len(parts) < 3 {
+			continue
+		}
+		// Handle MC_BACKUP_TRANSFER_DELAY (4 parts: mc, backup, transfer, delay)
+		if len(parts) == 4 && parts[2] == "transfer" && parts[3] == "delay" {
+			if setErr := setGlobalField(&cfg.Global, "transfer_delay", kv[1]); setErr != nil {
+				slog.Warn("ignoring invalid environment override", "var", kv[0], "error", setErr)
+			}
+			continue
+		}
 		if len(parts) < 4 {
 			continue
 		}
@@ -678,8 +715,12 @@ func applyEnvOverrides(cfg *Config) {
 }
 
 func setLocalField(v *LocalConfig, key, val string) error {
-	if key == "dest_root" {
+	switch key {
+	case "dest_root":
 		v.DestRoot = normalizeDestRoot(val)
+		return nil
+	case "hot_root":
+		v.HotRoot = normalizeDestRoot(val)
 		return nil
 	}
 	return fmt.Errorf("unknown local field: %s", key)
@@ -709,6 +750,12 @@ func setGlobalField(v *GlobalConfig, key, val string) error {
 			return fmt.Errorf("invalid initial_delay duration: %q", val)
 		}
 		v.InitialDelay = Duration{d}
+	case "transfer_delay":
+		d, err := time.ParseDuration(val)
+		if err != nil || d < 0 {
+			return fmt.Errorf("invalid transfer_delay duration: %q", val)
+		}
+		v.TransferDelay = Duration{d}
 	case "excludes":
 		v.Excludes = parseExcludesValue(val)
 	default:
@@ -753,6 +800,18 @@ func setRetentionField(v *RetentionConfig, key, val string) error {
 			return fmt.Errorf("invalid prune_count: %q", val)
 		}
 		v.PruneCount = i
+	case "hot_prune_days":
+		i, err := strconv.Atoi(val)
+		if err != nil || i < 0 {
+			return fmt.Errorf("invalid hot_prune_days: %q", val)
+		}
+		v.HotPruneDays = i
+	case "hot_prune_count":
+		i, err := strconv.Atoi(val)
+		if err != nil || i < 0 {
+			return fmt.Errorf("invalid hot_prune_count: %q", val)
+		}
+		v.HotPruneCount = i
 	default:
 		return fmt.Errorf("unknown retention field: %s", key)
 	}
@@ -960,8 +1019,11 @@ func SetConfigValue(path, key, val string) error {
 }
 
 func getLocalField(l LocalConfig, key string) string {
-	if key == "dest_root" {
+	switch key {
+	case "dest_root":
 		return l.DestRoot
+	case "hot_root":
+		return l.HotRoot
 	}
 	return ""
 }
@@ -978,6 +1040,8 @@ func getGlobalField(g GlobalConfig, key string) string {
 		return g.BackupInterval.Duration.String()
 	case "initial_delay":
 		return g.InitialDelay.Duration.String()
+	case "transfer_delay":
+		return g.TransferDelay.Duration.String()
 	case "excludes":
 		if g.Excludes == nil {
 			return "default"
@@ -1012,6 +1076,10 @@ func getRetentionField(r RetentionConfig, key string) string {
 		return fmt.Sprintf("%d", r.PruneDays)
 	case "prune_count":
 		return fmt.Sprintf("%d", r.PruneCount)
+	case "hot_prune_days":
+		return fmt.Sprintf("%d", r.HotPruneDays)
+	case "hot_prune_count":
+		return fmt.Sprintf("%d", r.HotPruneCount)
 	}
 	return ""
 }
@@ -1050,6 +1118,7 @@ type lastSnapshotEntry struct {
 	Time  time.Time
 	Local string
 	NAS   string
+	Hot   string
 }
 
 func readLastSnapshots(cfgPath string) map[string]lastSnapshotEntry {
@@ -1063,7 +1132,7 @@ func readLastSnapshots(cfgPath string) map[string]lastSnapshotEntry {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "=", 4)
+		parts := strings.SplitN(line, "=", 5)
 		if len(parts) < 2 {
 			continue
 		}
@@ -1078,18 +1147,21 @@ func readLastSnapshots(cfgPath string) map[string]lastSnapshotEntry {
 		if len(parts) >= 4 {
 			entry.NAS = parts[3]
 		}
+		if len(parts) >= 5 {
+			entry.Hot = parts[4]
+		}
 		m[parts[0]] = entry
 	}
 	return m
 }
 
-func writeLastSnapshot(cfgPath, server, localPath, nasPath string) {
-	writeLastSnapshotAt(cfgPath, server, localPath, nasPath, time.Now())
+func writeLastSnapshot(cfgPath, server, localPath, nasPath, hotPath string) {
+	writeLastSnapshotAt(cfgPath, server, localPath, nasPath, hotPath, time.Now())
 }
 
-func writeLastSnapshotAt(cfgPath, server, localPath, nasPath string, t time.Time) {
+func writeLastSnapshotAt(cfgPath, server, localPath, nasPath, hotPath string, t time.Time) {
 	m := readLastSnapshots(cfgPath)
-	m[server] = lastSnapshotEntry{Time: t, Local: localPath, NAS: nasPath}
+	m[server] = lastSnapshotEntry{Time: t, Local: localPath, NAS: nasPath, Hot: hotPath}
 	dst := lastBackupPath(cfgPath)
 	f, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*.tmp")
 	if err != nil {
@@ -1100,7 +1172,7 @@ func writeLastSnapshotAt(cfgPath, server, localPath, nasPath string, t time.Time
 	defer os.Remove(tmp)
 
 	for name, e := range m {
-		if _, err := fmt.Fprintf(f, "%s=%d=%s=%s\n", name, e.Time.Unix(), e.Local, e.NAS); err != nil {
+		if _, err := fmt.Fprintf(f, "%s=%d=%s=%s=%s\n", name, e.Time.Unix(), e.Local, e.NAS, e.Hot); err != nil {
 			slog.Warn("failed to write last-backup temp file", "path", tmp, "error", err)
 			f.Close()
 			return

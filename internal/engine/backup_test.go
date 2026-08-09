@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -85,9 +86,9 @@ func TestBackupServerRejectsInvalidTargetBeforeCommands(t *testing.T) {
 	runner := &recordingRunner{}
 	var gotErr error
 	withCommandRunner(runner, func() {
-		_, _, gotErr = NewBackupEngine(Config{}).BackupServer(
+		_, gotErr = NewBackupEngine(Config{}).BackupServer(
 			context.Background(), WatchConfig{Path: "/watch", Namespace: "ns"}, "creative",
-			ServerConfig{Target: "invalid"}, "", "", true,
+			ServerConfig{Target: "invalid"}, "", "", "", true,
 		)
 	})
 	if gotErr == nil || !strings.Contains(gotErr.Error(), `server "creative"`) {
@@ -110,24 +111,24 @@ func TestBackupServerLocalTargetUsesLocalHierarchy(t *testing.T) {
 	}
 	defer func() { rsyncRunner = previousRsyncRunner }()
 
-	path, usedSSH, err := func() (string, bool, error) {
-		var resultPath string
-		var resultSSH bool
+	res, err := func() (backupResult, error) {
+		var result backupResult
 		var resultErr error
 		withCommandRunner(runner, func() {
-			resultPath, resultSSH, resultErr = NewBackupEngine(Config{
+			result, resultErr = NewBackupEngine(Config{
 				Local: LocalConfig{DestRoot: localRoot},
 			}).BackupServer(context.Background(), WatchConfig{Namespace: "survival"}, "creative",
-				ServerConfig{Target: "local", DataDir: source}, "", "/nas/previous", true)
+				ServerConfig{Target: "local", DataDir: source}, "", "", "/nas/previous", true)
 		})
-		return resultPath, resultSSH, resultErr
+		return result, resultErr
 	}()
 	if err != nil {
 		t.Fatalf("local BackupServer failed: %v", err)
 	}
-	if usedSSH {
-		t.Fatal("local target reported SSH use")
+	if res.offloadPending {
+		t.Fatal("direct local target reported offloadPending")
 	}
+	path := res.destination
 	if filepath.Dir(path) != filepath.Join(localRoot, "survival", "creative") {
 		t.Fatalf("destination = %q, want local hierarchy", path)
 	}
@@ -268,6 +269,7 @@ func TestIsBackupDirRequiresTimestampFormat(t *testing.T) {
 		{"20250611-12000", false},
 		{"2025061a-1200", false},
 		{"snapshot-1200", false},
+		{"20250611-1200.inprogress", false},
 	}
 
 	for _, tt := range tests {
@@ -299,9 +301,9 @@ func TestBackupServerUsesResolvedExcludes(t *testing.T) {
 	}
 
 	withCommandRunner(runner, func() {
-		_, _, _ = NewBackupEngine(cfg).BackupServer(
+		_, _ = NewBackupEngine(cfg).BackupServer(
 			context.Background(), WatchConfig{Namespace: "mc"}, "creative",
-			ServerConfig{Target: "local", DataDir: source, Excludes: &serverExcludes}, "", "", true,
+			ServerConfig{Target: "local", DataDir: source, Excludes: &serverExcludes}, "", "", "", true,
 		)
 	})
 
@@ -380,10 +382,10 @@ func TestBackupServerSyncHonorsCallerContext(t *testing.T) {
 	defer func() { rsyncRunner = previousRsyncRunner }()
 
 	withCommandRunner(runner, func() {
-		_, _, err := NewBackupEngine(Config{
+		_, err := NewBackupEngine(Config{
 			Local: LocalConfig{DestRoot: localRoot},
 		}).BackupServer(ctx, WatchConfig{Namespace: "mc"}, "survival",
-			ServerConfig{Target: "local", DataDir: source}, "", "", true)
+			ServerConfig{Target: "local", DataDir: source}, "", "", "", true)
 		if err != nil {
 			t.Fatalf("BackupServer failed: %v", err)
 		}
@@ -425,10 +427,11 @@ func TestBackupServerSyncFailureEmitsWarningAndContinues(t *testing.T) {
 	defer slog.SetDefault(previousLogger)
 
 	withCommandRunner(runner, func() {
-		destPath, _, err := NewBackupEngine(Config{
+		res, err := NewBackupEngine(Config{
 			Local: LocalConfig{DestRoot: localRoot},
 		}).BackupServer(context.Background(), WatchConfig{Namespace: "mc"}, "survival",
-			ServerConfig{Target: "local", DataDir: source}, "", "", true)
+			ServerConfig{Target: "local", DataDir: source}, "", "", "", true)
+		destPath := res.destination
 		if err != nil {
 			t.Fatalf("BackupServer failed when sync failed: %v", err)
 		}
@@ -472,9 +475,9 @@ func TestBackupServerDeferredSaveOnRunsWhenFlushFails(t *testing.T) {
 
 	withCommandRunner(runner, func() {
 		engine := NewBackupEngine(Config{Local: LocalConfig{DestRoot: localRoot}})
-		_, _, err := engine.BackupServer(
+		_, err := engine.BackupServer(
 			ctx, WatchConfig{Namespace: "survival"}, "creative",
-			ServerConfig{Target: "local", DataDir: source}, "", "", false,
+			ServerConfig{Target: "local", DataDir: source}, "", "", "", false,
 		)
 		if err == nil {
 			t.Fatal("expected error on flush failure, got nil")
@@ -525,9 +528,9 @@ func TestBackupServerDeferredSaveOnRunsWhenRsyncFails(t *testing.T) {
 
 	withCommandRunner(runner, func() {
 		engine := NewBackupEngine(Config{Local: LocalConfig{DestRoot: localRoot}})
-		_, _, err := engine.BackupServer(
+		_, err := engine.BackupServer(
 			context.Background(), WatchConfig{Namespace: "survival"}, "creative",
-			ServerConfig{Target: "local", DataDir: source}, "", "", false,
+			ServerConfig{Target: "local", DataDir: source}, "", "", "", false,
 		)
 		if err == nil {
 			t.Fatal("expected error on rsync failure, got nil")
@@ -569,18 +572,18 @@ func TestBackupServerOnlineHappyPathCommandOrdering(t *testing.T) {
 
 	withCommandRunner(runner, func() {
 		engine := NewBackupEngine(Config{Local: LocalConfig{DestRoot: localRoot}})
-		destPath, usedSSH, err := engine.BackupServer(
+		res, err := engine.BackupServer(
 			context.Background(), WatchConfig{Namespace: "survival"}, "creative",
-			ServerConfig{Target: "local", DataDir: source}, "", "", false,
+			ServerConfig{Target: "local", DataDir: source}, "", "", "", false,
 		)
 		if err != nil {
 			t.Fatalf("BackupServer failed: %v", err)
 		}
-		if usedSSH {
-			t.Error("expected usedSSH = false for local target")
+		if res.target == "nas" {
+			t.Error("expected res.target != nas for local target")
 		}
-		if destPath == "" {
-			t.Error("expected non-empty destPath")
+		if res.destination == "" {
+			t.Error("expected non-empty destination")
 		}
 	})
 
@@ -735,9 +738,9 @@ func TestBackupServerAllBranches(t *testing.T) {
 	engine := NewBackupEngine(cfg)
 
 	// Offline local backup success
-	dest, usedSSH, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", true)
-	if err != nil || dest == "" || usedSSH {
-		t.Errorf("offline local backup failed: dest=%q, usedSSH=%v, err=%v", dest, usedSSH, err)
+	resLocal, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", "", true)
+	if err != nil || resLocal.destination == "" || resLocal.target == "nas" {
+		t.Errorf("offline local backup failed: res=%+v, err=%v", resLocal, err)
 	}
 
 	// Online local backup success with mock RCON
@@ -748,9 +751,9 @@ func TestBackupServerAllBranches(t *testing.T) {
 		}
 	})
 	withCommandRunner(runnerSuccess, func() {
-		dest, usedSSH, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
-		if err != nil || dest == "" || usedSSH {
-			t.Errorf("online local backup failed: dest=%q, usedSSH=%v, err=%v", dest, usedSSH, err)
+		resLocal, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", "", false)
+		if err != nil || resLocal.destination == "" || resLocal.target == "nas" {
+			t.Errorf("online local backup failed: res=%+v, err=%v", resLocal, err)
 		}
 	})
 
@@ -762,8 +765,7 @@ func TestBackupServerAllBranches(t *testing.T) {
 		}
 	})
 	withCommandRunner(runnerSaveOffErr, func() {
-		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
-		if err == nil || !strings.Contains(err.Error(), "save-off") {
+		if _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", "", false); err == nil || !strings.Contains(err.Error(), "save-off") {
 			t.Errorf("expected save-off error, got %v", err)
 		}
 	})
@@ -784,8 +786,7 @@ func TestBackupServerAllBranches(t *testing.T) {
 		}
 	})
 	withCommandRunner(runnerFlushErr, func() {
-		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
-		if err == nil || !strings.Contains(err.Error(), "flush") {
+		if _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", "", false); err == nil || !strings.Contains(err.Error(), "flush") {
 			t.Errorf("expected flush error, got %v", err)
 		}
 	})
@@ -794,8 +795,7 @@ func TestBackupServerAllBranches(t *testing.T) {
 		return errors.New("rsync failed")
 	}
 	withCommandRunner(runnerSuccess, func() {
-		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
-		if err == nil || !strings.Contains(err.Error(), "rsync") {
+		if _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", "", false); err == nil || !strings.Contains(err.Error(), "rsync") {
 			t.Errorf("expected rsync error, got %v", err)
 		}
 	})
@@ -805,8 +805,7 @@ func TestBackupServerAllBranches(t *testing.T) {
 	badCfg := cfg
 	badCfg.Local.DestRoot = parentFile
 	badEngine := NewBackupEngine(badCfg)
-	_, _, err = badEngine.BackupServer(context.Background(), badCfg.Watch[0], "s1", badCfg.Servers["s1"], "", "", true)
-	if err == nil || !strings.Contains(err.Error(), "local mkdir") {
+	if _, err = badEngine.BackupServer(context.Background(), badCfg.Watch[0], "s1", badCfg.Servers["s1"], "", "", "", true); err == nil || !strings.Contains(err.Error(), "local mkdir") {
 		t.Errorf("expected local mkdir error, got %v", err)
 	}
 
@@ -827,8 +826,7 @@ func TestBackupServerAllBranches(t *testing.T) {
 	})
 	rsyncRunner = func(ctx context.Context, args []string, progress func(int64, int64)) error { return nil }
 	withCommandRunner(runnerSaveOnErr, func() {
-		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
-		if err == nil || !strings.Contains(err.Error(), "save-on") {
+		if _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", "", false); err == nil || !strings.Contains(err.Error(), "save-on") {
 			t.Errorf("expected save-on error, got %v", err)
 		}
 	})
@@ -839,8 +837,7 @@ func TestBackupServerAllBranches(t *testing.T) {
 	}
 	rsyncRunner = rsyncRunnerErr
 	withCommandRunner(runnerSaveOnErr, func() {
-		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", false)
-		if err == nil || !strings.Contains(err.Error(), "rsync") {
+		if _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s1", cfg.Servers["s1"], "", "", "", false); err == nil || !strings.Contains(err.Error(), "rsync") {
 			t.Errorf("expected rsync error, got %v", err)
 		}
 	})
@@ -865,9 +862,9 @@ func TestBackupServerAllBranches(t *testing.T) {
 
 	rsyncRunner = func(ctx context.Context, args []string, progress func(int64, int64)) error { return nil }
 	withCommandRunner(runnerNASSuccess, func() {
-		dest, usedSSH, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s2", cfg.Servers["s2"], "", "", true)
-		if err != nil || dest == "" || !usedSSH {
-			t.Errorf("NAS backup success failed: dest=%q, usedSSH=%v, err=%v", dest, usedSSH, err)
+		resNAS, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s2", cfg.Servers["s2"], "", "", "", true)
+		if err != nil || resNAS.destination == "" || resNAS.target != "nas" {
+			t.Errorf("NAS backup success failed: res=%+v, err=%v", resNAS, err)
 		}
 	})
 
@@ -889,8 +886,7 @@ func TestBackupServerAllBranches(t *testing.T) {
 		}
 	})
 	withCommandRunner(runnerNASEnsureErr, func() {
-		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s2", cfg.Servers["s2"], "", "", true)
-		if err == nil || !strings.Contains(err.Error(), "create NAS dir") {
+		if _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s2", cfg.Servers["s2"], "", "", "", true); err == nil || !strings.Contains(err.Error(), "create NAS dir") {
 			t.Errorf("expected create NAS dir error, got %v", err)
 		}
 	})
@@ -900,8 +896,7 @@ func TestBackupServerAllBranches(t *testing.T) {
 		return errors.New("nas rsync failed")
 	}
 	withCommandRunner(runnerNASSuccess, func() {
-		_, _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s2", cfg.Servers["s2"], "", "", true)
-		if err == nil || !strings.Contains(err.Error(), "NAS rsync") {
+		if _, err := engine.BackupServer(context.Background(), cfg.Watch[0], "s2", cfg.Servers["s2"], "", "", "", true); err == nil || !strings.Contains(err.Error(), "NAS rsync") {
 			t.Errorf("expected NAS rsync error, got %v", err)
 		}
 	})
@@ -936,8 +931,7 @@ func TestBackupServerNASReadyFailAndRsyncRunner(t *testing.T) {
 	})
 
 	withCommandRunner(runnerNASFail, func() {
-		_, _, err := engine.BackupServer(context.Background(), WatchConfig{Path: watchDir, Namespace: "mc"}, "nas_server", cfg.Servers["nas_server"], "", "", false)
-		if err == nil {
+		if _, err := engine.BackupServer(context.Background(), WatchConfig{Path: watchDir, Namespace: "mc"}, "nas_server", cfg.Servers["nas_server"], "", "", "", false); err == nil {
 			t.Error("expected BackupServer error when checkNASReady fails")
 		}
 	})
@@ -979,11 +973,10 @@ func TestBackupServerAutodetectsRconPassword(t *testing.T) {
 
 	watch := WatchConfig{Path: tmpWatch, Namespace: "test-ns"}
 	server := ServerConfig{Target: "local", RconPassword: ""}
-
 	withCommandRunner(runner, func() {
-		_, _, err := NewBackupEngine(Config{
+		_, err := NewBackupEngine(Config{
 			Local: LocalConfig{DestRoot: localRoot},
-		}).BackupServer(context.Background(), watch, "cone-create", server, "", "", false)
+		}).BackupServer(context.Background(), watch, "cone-create", server, "", "", "", false)
 		if err != nil {
 			t.Fatalf("BackupServer failed: %v", err)
 		}
@@ -999,5 +992,286 @@ func TestBackupServerAutodetectsRconPassword(t *testing.T) {
 	}
 	if !foundDetectedPass {
 		t.Errorf("expected RCON_PASSWORD=detected_pass in commands, got commands: %#v", runner.commands)
+	}
+}
+func TestTieredBackupHotCopyIsAtomic(t *testing.T) {
+	hotRoot := t.TempDir()
+	source := t.TempDir()
+	runner := &recordingRunner{}
+
+	previousRsyncRunner := rsyncRunner
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	var capturedDest string
+	var inProgressExistedDuringRsync bool
+	var finalExistedDuringRsync bool
+
+	rsyncRunner = func(_ context.Context, args []string, _ func(int64, int64)) error {
+		capturedDest = args[len(args)-1]
+		dest := strings.TrimSuffix(capturedDest, "/")
+		if _, err := os.Stat(dest); err == nil {
+			inProgressExistedDuringRsync = true
+		}
+		finalDir := strings.TrimSuffix(dest, ".inprogress")
+		if _, err := os.Stat(finalDir); err == nil {
+			finalExistedDuringRsync = true
+		}
+		return nil
+	}
+
+	engine := NewBackupEngine(Config{Local: LocalConfig{HotRoot: hotRoot, DestRoot: t.TempDir()}})
+	watch := WatchConfig{Namespace: "survival"}
+	server := ServerConfig{Target: "tiered-local", DataDir: source}
+
+	var res backupResult
+	var err error
+	withCommandRunner(runner, func() {
+		res, err = engine.BackupServer(context.Background(), watch, "creative", server, "/prev/hot", "", "", true)
+	})
+	if err != nil {
+		t.Fatalf("BackupServer failed: %v", err)
+	}
+	if !res.offloadPending {
+		t.Fatal("expected offloadPending = true for tiered-local")
+	}
+	if !inProgressExistedDuringRsync {
+		t.Error("expected .inprogress directory to exist during rsync")
+	}
+	if finalExistedDuringRsync {
+		t.Error("final timestamp directory existed during rsync, want atomic rename after")
+	}
+	if _, err := os.Stat(res.destination); err != nil {
+		t.Fatalf("final destination directory %q does not exist: %v", res.destination, err)
+	}
+	if _, err := os.Stat(res.destination + ".inprogress"); err == nil {
+		t.Fatalf(".inprogress directory still exists after promotion: %s.inprogress", res.destination)
+	}
+
+	t.Run("hot rsync failure cleans up and re-enables save-on", func(t *testing.T) {
+		var commands []string
+		failRunner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+			cmdStr := name + " " + strings.Join(args, " ")
+			commands = append(commands, cmdStr)
+			return &recordingCommand{name: name, args: args}
+		})
+
+		rsyncRunner = func(_ context.Context, args []string, _ func(int64, int64)) error {
+			dest := strings.TrimSuffix(args[len(args)-1], "/")
+			_ = os.WriteFile(filepath.Join(dest, "stale.tmp"), []byte("stale"), 0644)
+			return errors.New("hot rsync disk full")
+		}
+
+		withCommandRunner(failRunner, func() {
+			_, err := engine.BackupServer(context.Background(), watch, "creative", server, "", "", "", false)
+			if err == nil || !strings.Contains(err.Error(), "hot rsync disk full") {
+				t.Fatalf("expected hot rsync error, got: %v", err)
+			}
+		})
+
+		hasSaveOn := false
+		for _, cmd := range commands {
+			if strings.Contains(cmd, "save-on") {
+				hasSaveOn = true
+			}
+		}
+		if !hasSaveOn {
+			t.Errorf("deferred save-on did not execute on hot rsync failure, commands: %v", commands)
+		}
+	})
+}
+
+func TestTieredBackupReenablesAutosaveBeforeOffload(t *testing.T) {
+	hotRoot := t.TempDir()
+	source := t.TempDir()
+
+	var events []string
+	var eventsMu sync.Mutex
+	addEvent := func(e string) {
+		eventsMu.Lock()
+		events = append(events, e)
+		eventsMu.Unlock()
+	}
+
+	runner := commandRunnerFunc(func(c context.Context, name string, args ...string) command {
+		cmdStr := name + " " + strings.Join(args, " ")
+		if strings.Contains(cmdStr, "save-off") {
+			addEvent("save-off")
+		} else if strings.Contains(cmdStr, "save-all flush") {
+			addEvent("save-all flush")
+		} else if name == "sync" {
+			addEvent("sync")
+		} else if strings.Contains(cmdStr, "save-on") {
+			addEvent("save-on")
+		}
+		return &recordingCommand{name: name, args: args}
+	})
+
+	previousRsyncRunner := rsyncRunner
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	rsyncRunner = func(_ context.Context, args []string, _ func(int64, int64)) error {
+		dest := args[len(args)-1]
+		if strings.Contains(dest, hotRoot) {
+			addEvent("hot rsync")
+		}
+		return nil
+	}
+
+	cfg := Config{
+		Local: LocalConfig{HotRoot: hotRoot, DestRoot: t.TempDir()},
+	}
+	engine := NewBackupEngine(cfg)
+	watch := WatchConfig{Namespace: "ns"}
+	server := ServerConfig{Target: "tiered-local", DataDir: source}
+
+	withCommandRunner(runner, func() {
+		res, err := engine.BackupServer(context.Background(), watch, "srv1", server, "", "", "", false)
+		if err != nil {
+			t.Fatalf("BackupServer failed: %v", err)
+		}
+		addEvent("BackupServer return")
+
+		if res.offloadPending {
+			_, err := offloadSnapshot(context.Background(), cfg, watch, "srv1", res.destination, res.timestamp, "local", "", nil)
+			if err != nil {
+				t.Fatalf("offloadSnapshot failed: %v", err)
+			}
+			addEvent("cold rsync")
+		}
+	})
+
+	wantEvents := []string{"save-off", "save-all flush", "sync", "hot rsync", "save-on", "BackupServer return", "cold rsync"}
+	if len(events) != len(wantEvents) {
+		t.Fatalf("events = %v, want %v", events, wantEvents)
+	}
+	for i := range wantEvents {
+		if events[i] != wantEvents[i] {
+			t.Errorf("event %d = %q, want %q (full sequence: %v)", i, events[i], wantEvents[i], events)
+		}
+	}
+}
+
+func TestOffloadSnapshotLocalPromotesAtomically(t *testing.T) {
+	coldRoot := t.TempDir()
+	hotSnap := t.TempDir()
+	_ = os.WriteFile(filepath.Join(hotSnap, "world.dat"), []byte("data"), 0644)
+
+	cfg := Config{
+		Local: LocalConfig{DestRoot: coldRoot},
+	}
+	watch := WatchConfig{Namespace: "mc"}
+
+	previousRsyncRunner := rsyncRunner
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	var passedLinkDest string
+	var inProgressExistedDuringOffload bool
+	var finalExistedDuringOffload bool
+
+	rsyncRunner = func(_ context.Context, args []string, _ func(int64, int64)) error {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--link-dest=") {
+				passedLinkDest = strings.TrimPrefix(arg, "--link-dest=")
+			}
+		}
+		dest := strings.TrimSuffix(args[len(args)-1], "/")
+		if _, err := os.Stat(dest); err == nil {
+			inProgressExistedDuringOffload = true
+			_ = os.WriteFile(filepath.Join(dest, "marker.txt"), []byte("marker"), 0644)
+		}
+		finalDir := strings.TrimSuffix(dest, ".inprogress")
+		if _, err := os.Stat(finalDir); err == nil {
+			finalExistedDuringOffload = true
+		}
+		return nil
+	}
+
+	prevCold := filepath.Join(coldRoot, "mc", "s1", "20260101-1000")
+	finalPath, err := offloadSnapshot(context.Background(), cfg, watch, "s1", hotSnap, "20260101-1100", "local", prevCold, nil)
+	if err != nil {
+		t.Fatalf("offloadSnapshot failed: %v", err)
+	}
+
+	if passedLinkDest != prevCold {
+		t.Errorf("passed --link-dest = %q, want %q", passedLinkDest, prevCold)
+	}
+	if !inProgressExistedDuringOffload {
+		t.Error("expected .inprogress to exist during offload rsync")
+	}
+	if finalExistedDuringOffload {
+		t.Error("final path existed during offload rsync, want atomic rename after")
+	}
+	markerPath := filepath.Join(finalPath, "marker.txt")
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Errorf("marker file missing in promoted path %q: %v", finalPath, err)
+	}
+	if _, err := os.Stat(finalPath + ".inprogress"); err == nil {
+		t.Errorf(".inprogress directory still exists after offload promotion")
+	}
+}
+
+func TestOffloadSnapshotFailureRemovesInProgress(t *testing.T) {
+	coldRoot := t.TempDir()
+	hotSnap := t.TempDir()
+
+	cfg := Config{
+		Local: LocalConfig{DestRoot: coldRoot},
+		NAS:   NASConfig{SSHUser: "backup", SSHHost: "nas.local", DestRoot: "/volume1/backups"},
+	}
+	watch := WatchConfig{Namespace: "mc"}
+
+	previousRsyncRunner := rsyncRunner
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	rsyncRunner = func(_ context.Context, args []string, _ func(int64, int64)) error {
+		dest := strings.TrimSuffix(args[len(args)-1], "/")
+		_ = os.WriteFile(filepath.Join(dest, "partial.tmp"), []byte("partial"), 0644)
+		return errors.New("offload connection lost")
+	}
+
+	prevCold := filepath.Join(coldRoot, "mc", "s1", "20260101-1000")
+	_ = os.MkdirAll(prevCold, 0755)
+	_ = os.WriteFile(filepath.Join(prevCold, "prev.dat"), []byte("prev"), 0644)
+
+	_, err := offloadSnapshot(context.Background(), cfg, watch, "s1", hotSnap, "20260101-1100", "local", prevCold, nil)
+	if err == nil {
+		t.Fatal("expected local offload error, got nil")
+	}
+
+	inProgressLocal := filepath.Join(coldRoot, "mc", "s1", "20260101-1100.inprogress")
+	finalLocal := filepath.Join(coldRoot, "mc", "s1", "20260101-1100")
+	if _, err := os.Stat(inProgressLocal); err == nil {
+		t.Errorf("local .inprogress still exists after offload failure: %s", inProgressLocal)
+	}
+	if _, err := os.Stat(finalLocal); err == nil {
+		t.Errorf("local final directory created despite offload failure: %s", finalLocal)
+	}
+	if _, err := os.Stat(filepath.Join(prevCold, "prev.dat")); err != nil {
+		t.Errorf("previous cold snapshot modified/deleted on offload failure: %v", err)
+	}
+
+	runner := &recordingRunner{}
+	withCommandRunner(runner, func() {
+		_, err = offloadSnapshot(context.Background(), cfg, watch, "s1", hotSnap, "20260101-1100", "nas", prevCold, nil)
+	})
+	if err == nil {
+		t.Fatal("expected NAS offload error, got nil")
+	}
+	hasRemoveCmd := false
+	hasRenameCmd := false
+	for _, cmd := range runner.commands {
+		cmdStr := cmd.name + " " + strings.Join(cmd.args, " ")
+		if strings.Contains(cmdStr, "rm -rf") && strings.Contains(cmdStr, "20260101-1100.inprogress") {
+			hasRemoveCmd = true
+		}
+		if strings.Contains(cmdStr, "mv --") {
+			hasRenameCmd = true
+		}
+	}
+	if !hasRemoveCmd {
+		t.Errorf("NAS offload failure did not run rm -rf cleanup on remote .inprogress: commands = %#v", runner.commands)
+	}
+	if hasRenameCmd {
+		t.Errorf("NAS offload failure unexpectedly ran mv promotion command: commands = %#v", runner.commands)
 	}
 }

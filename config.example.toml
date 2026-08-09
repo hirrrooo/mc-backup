@@ -3,11 +3,13 @@ listen_addr = "127.0.0.1:47990"  # Bound to loopback by default. Non-loopback re
 # api_token = ""                 # Bearer token for mutating API endpoints. Recommended for loopback, required for remote binding.
 backup_interval = "1h"
 initial_delay = "2m"
+transfer_delay = "0s"             # Delay after hot backup before offloading to cold storage (0s disables delay)
 max_mbps = 40.0
 # excludes = ["*.jar", "cache", "logs", "*.tmp"] # Global rsync exclude patterns (defaults to *.jar, cache, logs, *.tmp if omitted)
 
 [local]
 dest_root = "/var/lib/mc-backup"
+# hot_root = "/mnt/nvme/mc-backup/hot" # Required for tiered-local and tiered-nas targets
 
 [nas]
 ssh_user = "backup"
@@ -19,6 +21,8 @@ dest_root = "/volume1/backups"
 [retention]
 prune_days = 7
 prune_count = 0
+hot_prune_days = 0                # Hot retention days (0 disables day-based hot pruning)
+hot_prune_count = 2               # Hot retention snapshot count
 
 [[watch]]
 path = "/opt/minecraft/servers/docker/servers"
@@ -27,6 +31,6 @@ namespace = "minecraft"
 # Per-server overrides are auto-generated on first discovery.
 # Uncomment and edit to customize:
 # [server.example]
-# target = "nas"                 # or "local"
+# target = "nas"                 # "nas", "local", "tiered-nas" (or "tiered", "two-tier"), or "tiered-local"
 # pause_if_no_players = true   # skip backups when no one is online
 # excludes = ["*.jar"]           # per-server excludes (overrides global; set excludes = [] to disable all excludes)

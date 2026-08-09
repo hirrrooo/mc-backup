@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -272,8 +273,8 @@ func TestDaemonRunContextCancelled(t *testing.T) {
 	_ = os.WriteFile(cfgPath, []byte("[global]\nlisten_addr = \"127.0.0.1:8080\"\nbackup_interval = \"1ms\"\ninitial_delay = \"0s\"\n"), 0600)
 
 	// Write recent and due snapshots to test initial backup branches
-	writeLastSnapshotAt(cfgPath, "s_recent", "/local/a", "", time.Now())
-	writeLastSnapshotAt(cfgPath, "s_due", "/local/b", "", time.Now().Add(-200*time.Hour))
+	writeLastSnapshotAt(cfgPath, "s_recent", "/local/a", "", "", time.Now())
+	writeLastSnapshotAt(cfgPath, "s_due", "/local/b", "", "", time.Now().Add(-200*time.Hour))
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -703,5 +704,344 @@ func TestDaemonRunBackupCycleAutodetectsRconPassword(t *testing.T) {
 
 	if capturedPass != "player_check_pass" {
 		t.Fatalf("captured password = %q, want %q", capturedPass, "player_check_pass")
+	}
+}
+func TestLatestNASSnapshotCommandExcludesInProgress(t *testing.T) {
+	tmp := t.TempDir()
+	nasDir := filepath.Join(tmp, "nas", "mc", "s1")
+	completed := filepath.Join(nasDir, "20260101-1200")
+	inProgress := filepath.Join(nasDir, "20260101-1300.inprogress")
+	if err := os.MkdirAll(completed, 0755); err != nil {
+		t.Fatalf("mkdir completed: %v", err)
+	}
+	if err := os.MkdirAll(inProgress, 0755); err != nil {
+		t.Fatalf("mkdir inProgress: %v", err)
+	}
+
+	cmdStr := latestNASSnapshotCommand(nasDir)
+	cmd := exec.Command("sh", "-c", cmdStr)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("cmd failed: %v", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != completed {
+		t.Fatalf("latestNASSnapshotCommand = %q, want %q", got, completed)
+	}
+}
+
+func TestDiscoverTieredSnapshotsBackfillsLegacyState(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	hotRoot := filepath.Join(tmp, "hot")
+	localRoot := filepath.Join(tmp, "local")
+
+	// Write legacy 4-field last-backup
+	writeLastSnapshotAt(cfgPath, "s1", filepath.Join(localRoot, "mc", "s1", "20260101-1000"), "", "", time.Unix(1718107200, 0))
+
+	// Fixtures: completed hot, inprogress hot, completed local
+	completedHot := filepath.Join(hotRoot, "mc", "s1", "20260101-1100")
+	inProgressHot := filepath.Join(hotRoot, "mc", "s1", "20260101-1200.inprogress")
+	completedLocal := filepath.Join(localRoot, "mc", "s1", "20260101-1100")
+
+	_ = os.MkdirAll(filepath.Join(tmp, "watch", "s1"), 0755)
+	_ = os.MkdirAll(completedHot, 0755)
+	_ = os.MkdirAll(inProgressHot, 0755)
+	_ = os.MkdirAll(completedLocal, 0755)
+	cfg := &Config{
+		Local: LocalConfig{DestRoot: localRoot, HotRoot: hotRoot},
+		Watch: []WatchConfig{{Path: filepath.Join(tmp, "watch"), Namespace: "mc"}},
+		Servers: map[string]ServerConfig{
+			"s1": {Enabled: true, Target: "tiered-local"},
+		},
+	}
+
+	d := NewDaemon(cfgPath, cfg)
+	d.discoverSnapshots(context.Background(), cfg)
+
+	d.stateMu.Lock()
+	state := d.lastBackups["mc/s1"]
+	d.stateMu.Unlock()
+
+	if state == nil {
+		t.Fatal("state for mc/s1 is nil after discovery")
+	}
+	if state.hot != completedHot {
+		t.Errorf("discovered hot = %q, want %q", state.hot, completedHot)
+	}
+	if state.local != completedLocal {
+		t.Errorf("discovered local = %q, want %q", state.local, completedLocal)
+	}
+
+	stored := readLastSnapshots(cfgPath)
+	if stored["s1"].Hot != completedHot {
+		t.Errorf("persisted Hot = %q, want %q", stored["s1"].Hot, completedHot)
+	}
+}
+
+func TestOffloadDelayCancellationKeepsHotState(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	hotRoot := filepath.Join(tmp, "hot")
+	localRoot := filepath.Join(tmp, "local")
+
+	hotDir := filepath.Join(hotRoot, "mc", "s1", "20260101-1100")
+	_ = os.MkdirAll(hotDir, 0755)
+
+	cfg := Config{
+		Global: GlobalConfig{TransferDelay: Duration{10 * time.Second}},
+		Local:  LocalConfig{HotRoot: hotRoot, DestRoot: localRoot},
+	}
+
+	d := NewDaemon(cfgPath, &cfg)
+	d.lastBackups["mc/s1"] = &lastBackup{hot: hotDir}
+	d.jobTracker.Add("mc/s1", &JobInfo{ServerName: "s1", Snapshot: "20260101-1100", State: "Waiting Offload"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(15 * time.Millisecond)
+		cancel()
+	}()
+
+	job := offloadJob{
+		key:        "mc/s1",
+		namespace:  "mc",
+		serverName: "s1",
+		hotPath:    hotDir,
+		timestamp:  "20260101-1100",
+		coldTarget: "local",
+		cfg:        cfg,
+		watch:      WatchConfig{Namespace: "mc"},
+	}
+
+	err := d.processOffloadJob(ctx, job)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("processOffloadJob expected context.Canceled error, got: %v", err)
+	}
+
+	d.stateMu.Lock()
+	st := d.lastBackups["mc/s1"]
+	d.stateMu.Unlock()
+
+	if st.hot != hotDir || st.local != "" {
+		t.Errorf("state altered on cancellation: %+v", st)
+	}
+	if info := d.jobTracker.Snapshot()["mc/s1"]; info != nil {
+		t.Errorf("jobTracker entry not removed on cancellation: %+v", info)
+	}
+}
+
+func TestOffloadFailureKeepsHotAndColdState(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	hotRoot := filepath.Join(tmp, "hot")
+	localRoot := filepath.Join(tmp, "local")
+
+	hotDir := filepath.Join(hotRoot, "mc", "s1", "20260101-1100")
+	prevColdDir := filepath.Join(localRoot, "mc", "s1", "20260101-1000")
+	_ = os.MkdirAll(hotDir, 0755)
+	_ = os.MkdirAll(prevColdDir, 0755)
+
+	cfg := Config{
+		Local: LocalConfig{HotRoot: hotRoot, DestRoot: localRoot},
+	}
+
+	previousRsyncRunner := rsyncRunner
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	rsyncRunner = func(_ context.Context, _ []string, _ func(int64, int64)) error {
+		return errors.New("cold rsync failed")
+	}
+
+	d := NewDaemon(cfgPath, &cfg)
+	d.lastBackups["mc/s1"] = &lastBackup{hot: hotDir, local: prevColdDir}
+	d.jobTracker.Add("mc/s1", &JobInfo{ServerName: "s1", Snapshot: "20260101-1100", State: "Waiting Offload"})
+
+	job := offloadJob{
+		key:        "mc/s1",
+		namespace:  "mc",
+		serverName: "s1",
+		hotPath:    hotDir,
+		timestamp:  "20260101-1100",
+		coldTarget: "local",
+		cfg:        cfg,
+		watch:      WatchConfig{Namespace: "mc"},
+	}
+
+	err := d.processOffloadJob(context.Background(), job)
+	if err == nil || !strings.Contains(err.Error(), "cold rsync failed") {
+		t.Fatalf("expected offload error, got: %v", err)
+	}
+
+	d.stateMu.Lock()
+	st := d.lastBackups["mc/s1"]
+	d.stateMu.Unlock()
+
+	if st.hot != hotDir || st.local != prevColdDir {
+		t.Errorf("state altered on offload failure: %+v", st)
+	}
+	if info := d.jobTracker.Snapshot()["mc/s1"]; info != nil {
+		t.Errorf("jobTracker entry not removed on failure: %+v", info)
+	}
+}
+
+func TestTieredOffloadDoesNotBlockNextHotBackup(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	hotRoot := filepath.Join(tmp, "hot")
+	localRoot := filepath.Join(tmp, "local")
+
+	watchDir := filepath.Join(tmp, "watch")
+	sourceA := filepath.Join(tmp, "srcA")
+	sourceB := filepath.Join(tmp, "srcB")
+	_ = os.MkdirAll(filepath.Join(watchDir, "srvA"), 0755)
+	_ = os.MkdirAll(filepath.Join(watchDir, "srvB"), 0755)
+	_ = os.MkdirAll(sourceA, 0755)
+	_ = os.MkdirAll(sourceB, 0755)
+
+	cfg := Config{
+		Global: GlobalConfig{TransferDelay: Duration{1000 * time.Millisecond}},
+		Local:  LocalConfig{HotRoot: hotRoot, DestRoot: localRoot},
+		Watch:  []WatchConfig{{Path: watchDir, Namespace: "mc"}},
+		Servers: map[string]ServerConfig{
+			"srvA": {Enabled: true, Target: "tiered-local", DataDir: sourceA},
+			"srvB": {Enabled: true, Target: "tiered-local", DataDir: sourceB},
+		},
+	}
+
+	previousRsyncRunner := rsyncRunner
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	rsyncRunner = func(_ context.Context, _ []string, _ func(int64, int64)) error {
+		return nil
+	}
+
+	d := NewDaemon(cfgPath, &cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d.offloadWg.Add(1)
+	go d.runOffloadWorker(ctx)
+
+	runner := &recordingRunner{}
+	start := time.Now()
+	withCommandRunner(runner, func() {
+		d.runBackupCycle(ctx, "srvB", true)
+	})
+	duration := time.Since(start)
+
+	if duration >= 500*time.Millisecond {
+		t.Errorf("runBackupCycle for srvB took %v, should not have waited for 1s offload delay", duration)
+	}
+
+	d.stateMu.Lock()
+	stB := d.lastBackups["mc/srvB"]
+	d.stateMu.Unlock()
+
+	if stB == nil || stB.hot == "" {
+		t.Fatalf("srvB hot snapshot not recorded: %+v", stB)
+	}
+
+	cancel()
+	d.offloadWg.Wait()
+}
+
+func TestOlderOffloadCannotRegressNewerHotStateOrTracker(t *testing.T) {
+	jt := NewJobTracker()
+	key := "mc/s1"
+
+	// Newer hot capture updates tracker to 20260101-1200
+	jt.Add(key, &JobInfo{ServerName: "s1", Snapshot: "20260101-1200", State: "Saving (Hot)"})
+
+	// Older offload finishing for 20260101-1100 tries to update/remove tracker
+	updated := jt.UpdateIfSnapshot(key, "20260101-1100", &JobInfo{ServerName: "s1", Snapshot: "20260101-1100", State: "Transferring (NAS)"})
+	if updated {
+		t.Error("UpdateIfSnapshot unexpectedly updated older snapshot over newer tracker entry")
+	}
+
+	removed := jt.RemoveIfSnapshot(key, "20260101-1100")
+	if removed {
+		t.Error("RemoveIfSnapshot unexpectedly removed newer tracker entry using older snapshot")
+	}
+
+	info := jt.Snapshot()[key]
+	if info == nil || info.Snapshot != "20260101-1200" {
+		t.Errorf("tracker entry corrupted = %+v", info)
+	}
+}
+
+func TestOffloadSuccessUpdatesStateAndPrunesBothTiers(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	hotRoot := filepath.Join(tmp, "hot")
+	localRoot := filepath.Join(tmp, "local")
+
+	serverHotDir := filepath.Join(hotRoot, "mc", "s1")
+	serverColdDir := filepath.Join(localRoot, "mc", "s1")
+
+	// Create 3 completed hot directories and 3 completed cold directories
+	_ = os.MkdirAll(filepath.Join(serverHotDir, "20260101-1000"), 0755)
+	_ = os.MkdirAll(filepath.Join(serverHotDir, "20260101-1100"), 0755)
+	_ = os.MkdirAll(filepath.Join(serverHotDir, "20260101-1200"), 0755)
+
+	_ = os.MkdirAll(filepath.Join(serverColdDir, "20260101-0900"), 0755)
+	_ = os.MkdirAll(filepath.Join(serverColdDir, "20260101-1000"), 0755)
+
+	cfg := Config{
+		Local: LocalConfig{HotRoot: hotRoot, DestRoot: localRoot},
+		Retention: RetentionConfig{
+			PruneCount:    2,
+			HotPruneCount: 2,
+		},
+	}
+
+	previousRsyncRunner := rsyncRunner
+	defer func() { rsyncRunner = previousRsyncRunner }()
+
+	rsyncRunner = func(_ context.Context, _ []string, _ func(int64, int64)) error {
+		return nil
+	}
+
+	d := NewDaemon(cfgPath, &cfg)
+	d.lastBackups["mc/s1"] = &lastBackup{
+		hot:   filepath.Join(serverHotDir, "20260101-1200"),
+		local: filepath.Join(serverColdDir, "20260101-1000"),
+	}
+
+	job := offloadJob{
+		key:        "mc/s1",
+		namespace:  "mc",
+		serverName: "s1",
+		hotPath:    filepath.Join(serverHotDir, "20260101-1200"),
+		timestamp:  "20260101-1200",
+		coldTarget: "local",
+		cfg:        cfg,
+		watch:      WatchConfig{Namespace: "mc"},
+	}
+
+	err := d.processOffloadJob(context.Background(), job)
+	if err != nil {
+		t.Fatalf("processOffloadJob failed: %v", err)
+	}
+
+	d.stateMu.Lock()
+	st := d.lastBackups["mc/s1"]
+	d.stateMu.Unlock()
+
+	expectedCold := filepath.Join(serverColdDir, "20260101-1200")
+	if st.local != expectedCold {
+		t.Errorf("recorded cold path = %q, want %q", st.local, expectedCold)
+	}
+
+	// Check hot pruning retained newest 2 (20260101-1100 and 20260101-1200; 1000 pruned)
+	hotEntries, _ := os.ReadDir(serverHotDir)
+	if len(hotEntries) != 2 {
+		t.Errorf("hot entries count = %d, want 2", len(hotEntries))
+	}
+
+	// Check cold pruning retained newest 2 (20260101-1000 and 20260101-1200; 0900 pruned)
+	coldEntries, _ := os.ReadDir(serverColdDir)
+	if len(coldEntries) != 2 {
+		t.Errorf("cold entries count = %d, want 2", len(coldEntries))
 	}
 }

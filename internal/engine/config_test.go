@@ -91,24 +91,25 @@ enabled = true
 }
 
 func TestTargetConfig(t *testing.T) {
-	if got, err := resolveBackupTarget("skyblock", ServerConfig{}, LocalConfig{}); err != nil || got != "nas" {
+	validNAS := NASConfig{SSHUser: "backup", SSHHost: "nas.local", DestRoot: "/volume1/backups"}
+	if got, err := resolveBackupTarget("skyblock", ServerConfig{}, LocalConfig{}, validNAS); err != nil || got != "nas" {
 		t.Fatalf("omitted target = %q, %v; want nas", got, err)
 	}
-	if got, err := resolveBackupTarget("creative", ServerConfig{Target: "local"}, LocalConfig{DestRoot: "relative/local"}); err != nil || got != "local" {
+	if got, err := resolveBackupTarget("creative", ServerConfig{Target: "local"}, LocalConfig{DestRoot: "relative/local"}, NASConfig{}); err != nil || got != "local" {
 		t.Fatalf("local target = %q, %v; want local", got, err)
 	}
 }
 
 func TestResolveBackupTargetRejectsInvalidTarget(t *testing.T) {
-	_, err := resolveBackupTarget("creative", ServerConfig{Target: "s3"}, LocalConfig{})
-	want := `server "creative" has invalid backup target "s3" (want "local" or "nas")`
+	_, err := resolveBackupTarget("creative", ServerConfig{Target: "s3"}, LocalConfig{}, NASConfig{})
+	want := `server "creative" has invalid backup target "s3" (want "local", "nas", "tiered-local", or "tiered-nas")`
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
 }
 
 func TestResolveBackupTargetRequiresLocalRoot(t *testing.T) {
-	_, err := resolveBackupTarget("creative", ServerConfig{Target: "local"}, LocalConfig{})
+	_, err := resolveBackupTarget("creative", ServerConfig{Target: "local"}, LocalConfig{}, NASConfig{})
 	want := `server "creative" target "local" requires local.dest_root`
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
@@ -333,18 +334,39 @@ func TestLastSnapshotsRoundTripMultipleServers(t *testing.T) {
 	firstTime := time.Unix(1718107200, 0)
 	secondTime := time.Unix(1718110800, 0)
 
-	writeLastSnapshotAt(cfgPath, "creative", "/local/creative/20250611-1200", "/nas/creative/20250611-1200", firstTime)
-	writeLastSnapshotAt(cfgPath, "survival", "/local/survival/20250611-1300", "", secondTime)
+	writeLastSnapshotAt(cfgPath, "creative", "/local/creative/20250611-1200", "/nas/creative/20250611-1200", "/hot/creative/20250611-1200", firstTime)
+	writeLastSnapshotAt(cfgPath, "survival", "/local/survival/20250611-1300", "", "", secondTime)
 
 	got := readLastSnapshots(cfgPath)
 	if len(got) != 2 {
 		t.Fatalf("readLastSnapshots returned %d entries, want 2", len(got))
 	}
-	if got["creative"].Time.Unix() != firstTime.Unix() || got["creative"].Local != "/local/creative/20250611-1200" || got["creative"].NAS != "/nas/creative/20250611-1200" {
+	if got["creative"].Time.Unix() != firstTime.Unix() || got["creative"].Local != "/local/creative/20250611-1200" || got["creative"].NAS != "/nas/creative/20250611-1200" || got["creative"].Hot != "/hot/creative/20250611-1200" {
 		t.Errorf("creative snapshot = %#v", got["creative"])
 	}
-	if got["survival"].Time.Unix() != secondTime.Unix() || got["survival"].Local != "/local/survival/20250611-1300" || got["survival"].NAS != "" {
+	if got["survival"].Time.Unix() != secondTime.Unix() || got["survival"].Local != "/local/survival/20250611-1300" || got["survival"].NAS != "" || got["survival"].Hot != "" {
 		t.Errorf("survival snapshot = %#v", got["survival"])
+	}
+}
+
+func TestReadLegacyLastSnapshotWithoutHot(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	lastPath := lastBackupPath(cfgPath)
+	content := []byte("creative=1718107200=/local/creative/20250611-1200=/nas/creative/20250611-1200\n")
+	if err := os.WriteFile(lastPath, content, 0600); err != nil {
+		t.Fatalf("write legacy last-backup: %v", err)
+	}
+
+	got := readLastSnapshots(cfgPath)
+	if len(got) != 1 {
+		t.Fatalf("readLastSnapshots returned %d entries, want 1", len(got))
+	}
+	if got["creative"].Hot != "" {
+		t.Errorf("expected Hot = %q for legacy line, got %q", "", got["creative"].Hot)
+	}
+	if got["creative"].Local != "/local/creative/20250611-1200" || got["creative"].NAS != "/nas/creative/20250611-1200" {
+		t.Errorf("legacy entry = %#v", got["creative"])
 	}
 }
 
@@ -957,32 +979,230 @@ target = " Invalid "
 		}
 	}
 }
-
 func TestResolveBackupTargetAndValidationNormalization(t *testing.T) {
+	validNAS := NASConfig{SSHUser: "backup", SSHHost: "nas.local", DestRoot: "/volume1/backups"}
 	// Whitespace and case normalization in resolveBackupTarget
-	got, err := resolveBackupTarget("creative", ServerConfig{Target: " NAS "}, LocalConfig{})
+	got, err := resolveBackupTarget("creative", ServerConfig{Target: " NAS "}, LocalConfig{}, validNAS)
 	if err != nil || got != "nas" {
 		t.Errorf("resolveBackupTarget(' NAS ') = %q, %v; want 'nas', nil", got, err)
 	}
 
-	got, err = resolveBackupTarget("creative", ServerConfig{Target: " LOCAL "}, LocalConfig{DestRoot: "/tmp"})
+	got, err = resolveBackupTarget("creative", ServerConfig{Target: " LOCAL "}, LocalConfig{DestRoot: "/tmp"}, NASConfig{})
 	if err != nil || got != "local" {
 		t.Errorf("resolveBackupTarget(' LOCAL ') = %q, %v; want 'local', nil", got, err)
 	}
 
 	// Normalization in Validate()
 	cfg := DefaultConfig()
-	cfg.NAS = NASConfig{
-		SSHUser:  "backup",
-		SSHHost:  "nas.local",
-		DestRoot: "/volume1/backups",
-	}
+	cfg.NAS = validNAS
 	cfg.Servers = map[string]ServerConfig{
 		"srv1": {Enabled: true, Target: " Nas "},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate with target ' Nas ' failed: %v", err)
 	}
+}
+
+func TestTieredConfigParsingDefaultsAndEnv(t *testing.T) {
+	def := DefaultConfig()
+	if def.Retention.HotPruneCount != 2 {
+		t.Errorf("default HotPruneCount = %d, want 2", def.Retention.HotPruneCount)
+	}
+	if def.Retention.HotPruneDays != 0 {
+		t.Errorf("default HotPruneDays = %d, want 0", def.Retention.HotPruneDays)
+	}
+	if def.Global.TransferDelay.Duration != 0 {
+		t.Errorf("default TransferDelay = %v, want 0s", def.Global.TransferDelay.Duration)
+	}
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	content := []byte(`
+[global]
+listen_addr = "127.0.0.1:47990"
+transfer_delay = "10s"
+
+[local]
+dest_root = "/cold"
+hot_root = "/hot"
+
+[retention]
+hot_prune_count = 5
+hot_prune_days = 3
+`)
+	if err := os.WriteFile(cfgPath, content, 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Global.TransferDelay.Duration != 10*time.Second {
+		t.Errorf("TransferDelay = %v, want 10s", cfg.Global.TransferDelay.Duration)
+	}
+	if cfg.Local.HotRoot != "/hot" {
+		t.Errorf("HotRoot = %q, want /hot", cfg.Local.HotRoot)
+	}
+	if cfg.Retention.HotPruneCount != 5 || cfg.Retention.HotPruneDays != 3 {
+		t.Errorf("HotPruneCount/Days = %d/%d, want 5/3", cfg.Retention.HotPruneCount, cfg.Retention.HotPruneDays)
+	}
+
+	t.Setenv("MC_BACKUP_TRANSFER_DELAY", "15s")
+	cfgEnv, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig with env failed: %v", err)
+	}
+	if cfgEnv.Global.TransferDelay.Duration != 15*time.Second {
+		t.Errorf("MC_BACKUP_TRANSFER_DELAY override = %v, want 15s", cfgEnv.Global.TransferDelay.Duration)
+	}
+}
+
+func TestTieredTargetValidationMatrix(t *testing.T) {
+	validNAS := NASConfig{SSHUser: "backup", SSHHost: "nas.local", DestRoot: "/volume1/backups"}
+	validLocal := LocalConfig{DestRoot: "/cold", HotRoot: "/hot"}
+
+	tests := []struct {
+		name        string
+		server      ServerConfig
+		local       LocalConfig
+		nas         NASConfig
+		wantTarget  string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:       "canonical local",
+			server:     ServerConfig{Enabled: true, Target: "local"},
+			local:      LocalConfig{DestRoot: "/cold"},
+			wantTarget: "local",
+		},
+		{
+			name:       "canonical nas",
+			server:     ServerConfig{Enabled: true, Target: "nas"},
+			nas:        validNAS,
+			wantTarget: "nas",
+		},
+		{
+			name:       "canonical tiered-local",
+			server:     ServerConfig{Enabled: true, Target: "tiered-local"},
+			local:      validLocal,
+			wantTarget: "tiered-local",
+		},
+		{
+			name:       "canonical tiered-nas",
+			server:     ServerConfig{Enabled: true, Target: "tiered-nas"},
+			local:      LocalConfig{HotRoot: "/hot"},
+			nas:        validNAS,
+			wantTarget: "tiered-nas",
+		},
+		{
+			name:       "alias tiered maps to tiered-nas",
+			server:     ServerConfig{Enabled: true, Target: "tiered"},
+			local:      LocalConfig{HotRoot: "/hot"},
+			nas:        validNAS,
+			wantTarget: "tiered-nas",
+		},
+		{
+			name:       "alias two-tier maps to tiered-nas",
+			server:     ServerConfig{Enabled: true, Target: " two-tier "},
+			local:      LocalConfig{HotRoot: "/hot"},
+			nas:        validNAS,
+			wantTarget: "tiered-nas",
+		},
+		{
+			name:        "local missing dest_root",
+			server:      ServerConfig{Enabled: true, Target: "local"},
+			local:       LocalConfig{},
+			wantErr:     true,
+			errContains: `server "s1" target "local" requires local.dest_root`,
+		},
+		{
+			name:        "nas missing all nas fields",
+			server:      ServerConfig{Enabled: true, Target: "nas"},
+			nas:         NASConfig{},
+			wantErr:     true,
+			errContains: `server "s1" target "nas" requires nas.ssh_host, nas.ssh_user, nas.dest_root`,
+		},
+		{
+			name:        "tiered-local missing hot_root and dest_root",
+			server:      ServerConfig{Enabled: true, Target: "tiered-local"},
+			local:       LocalConfig{},
+			wantErr:     true,
+			errContains: `server "s1" target "tiered-local" requires local.hot_root, local.dest_root`,
+		},
+		{
+			name:        "tiered-nas missing hot_root and nas fields",
+			server:      ServerConfig{Enabled: true, Target: "tiered-nas"},
+			local:       LocalConfig{},
+			nas:         NASConfig{},
+			wantErr:     true,
+			errContains: `server "s1" target "tiered-nas" requires local.hot_root, nas.ssh_host, nas.ssh_user, nas.dest_root`,
+		},
+		{
+			name:        "invalid target s3",
+			server:      ServerConfig{Enabled: true, Target: "s3"},
+			wantErr:     true,
+			errContains: `server "s1" has invalid backup target "s3" (want "local", "nas", "tiered-local", or "tiered-nas")`,
+		},
+		{
+			name:       "disabled server with invalid target ignored",
+			server:     ServerConfig{Enabled: false, Target: "s3"},
+			wantTarget: "ignored",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.server.Enabled {
+				got, err := resolveBackupTarget("s1", tt.server, tt.local, tt.nas)
+				if (err != nil) != tt.wantErr {
+					t.Fatalf("resolveBackupTarget() error = %v, wantErr %v", err, tt.wantErr)
+				}
+				if tt.wantErr {
+					if !strings.Contains(err.Error(), tt.errContains) {
+						t.Errorf("error = %q, want containing %q", err.Error(), tt.errContains)
+					}
+				} else if got != tt.wantTarget {
+					t.Errorf("target = %q, want %q", got, tt.wantTarget)
+				}
+			}
+
+			cfg := DefaultConfig()
+			cfg.Local = tt.local
+			cfg.NAS = tt.nas
+			cfg.Servers = map[string]ServerConfig{"s1": tt.server}
+			cfgErr := cfg.Validate()
+			if tt.wantErr && tt.server.Enabled {
+				if cfgErr == nil || !strings.Contains(cfgErr.Error(), tt.errContains) {
+					t.Errorf("Config.Validate() error = %v, want containing %q", cfgErr, tt.errContains)
+				}
+			} else if !tt.server.Enabled && cfgErr != nil {
+				t.Errorf("Config.Validate() disabled server unexpected error: %v", cfgErr)
+			}
+		})
+	}
+
+	// Test negative TOML values in Validate
+	t.Run("negative values in Validate", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Global.TransferDelay = Duration{-1 * time.Second}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "invalid config: global.transfer_delay must be non-negative") {
+			t.Errorf("Validate() negative transfer_delay err = %v", err)
+		}
+
+		cfg = DefaultConfig()
+		cfg.Retention.HotPruneCount = -1
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "invalid config: retention.hot_prune_count must be non-negative") {
+			t.Errorf("Validate() negative hot_prune_count err = %v", err)
+		}
+
+		cfg = DefaultConfig()
+		cfg.Retention.HotPruneDays = -1
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "invalid config: retention.hot_prune_days must be non-negative") {
+			t.Errorf("Validate() negative hot_prune_days err = %v", err)
+		}
+	})
 }
 
 func TestNASDestRootEnvOverrideNormalized(t *testing.T) {
@@ -2203,9 +2423,9 @@ func TestWriteLastSnapshotHelper(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.toml")
 
-	writeLastSnapshot(cfgPath, "creative", "/local/path", "/nas/path")
+	writeLastSnapshot(cfgPath, "creative", "/local/path", "/nas/path", "/hot/path")
 	m := readLastSnapshots(cfgPath)
-	if entry, ok := m["creative"]; !ok || entry.Local != "/local/path" || entry.NAS != "/nas/path" {
+	if entry, ok := m["creative"]; !ok || entry.Local != "/local/path" || entry.NAS != "/nas/path" || entry.Hot != "/hot/path" {
 		t.Fatalf("writeLastSnapshot failed: %#v", entry)
 	}
 }
@@ -2277,7 +2497,7 @@ func TestConfigSaveAndSplitErrorPaths(t *testing.T) {
 	}
 
 	// writeLastSnapshotAt error path
-	writeLastSnapshotAt(filepath.Join(parentFile, "last.json"), "creative", "loc", "nas", time.Now())
+	writeLastSnapshotAt(filepath.Join(parentFile, "last.json"), "creative", "loc", "nas", "hot", time.Now())
 }
 
 func TestGetAndSetConfigValueEdgeCases(t *testing.T) {

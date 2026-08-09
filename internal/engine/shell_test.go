@@ -55,7 +55,7 @@ func TestLatestNASSnapshotCommandQuotesConfiguredPath(t *testing.T) {
 	nasDir := "/volume 'one/backups/mine craft/server one"
 
 	got := latestNASSnapshotCommand(nasDir)
-	want := "ls -dt '/volume '\\''one/backups/mine craft/server one'/[0-9]*-[0-9]* 2>/dev/null | head -1"
+	want := "ls -dt '/volume '\\''one/backups/mine craft/server one'/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9] 2>/dev/null | head -1"
 	if got != want {
 		t.Fatalf("latestNASSnapshotCommand() = %q, want %q", got, want)
 	}

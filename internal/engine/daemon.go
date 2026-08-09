@@ -14,7 +14,19 @@ import (
 	"log/slog"
 )
 
+type offloadJob struct {
+	key        string
+	namespace  string
+	serverName string
+	hotPath    string
+	timestamp  string
+	coldTarget string
+	cfg        Config
+	watch      WatchConfig
+}
+
 type lastBackup struct {
+	hot   string
 	local string
 	nas   string
 }
@@ -24,9 +36,11 @@ type Daemon struct {
 	ac         atomicConfig
 	jobTracker *JobTracker
 	// lastBackups stores the last recorded snapshot paths per server (namespace/serverName -> *lastBackup).
-	// Startup population happens sequentially before backup cycles start; all subsequent runtime
-	// reads and writes are serialized by cycleMu.
+	// All reads and writes are guarded by stateMu.
 	lastBackups  map[string]*lastBackup
+	stateMu      sync.Mutex
+	offloadCh    chan offloadJob
+	offloadWg    sync.WaitGroup
 	autoServers  map[string]bool
 	autoMu       sync.Mutex
 	legacyMu     sync.Mutex
@@ -38,17 +52,21 @@ type Daemon struct {
 }
 
 func NewDaemon(cfgPath string, cfg *Config) *Daemon {
+	chCap := len(cfg.Servers)
+	if chCap < 1 {
+		chCap = 16
+	}
 	d := &Daemon{
 		cfgPath:      cfgPath,
 		jobTracker:   NewJobTracker(),
 		lastBackups:  make(map[string]*lastBackup),
+		offloadCh:    make(chan offloadJob, chCap),
 		autoServers:  loadAutoServerNames(cfgPath),
 		legacyWarned: make(map[string]struct{}),
 	}
 	d.ac.Store(cfg)
 	return d
 }
-
 func (d *Daemon) warnLegacyBackupDirOnce(w WatchConfig, serverName string) {
 	path := w.backupDir(serverName)
 	entries, err := os.ReadDir(path)
@@ -138,18 +156,33 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 	servers, _ := discoverServersWithWarning(cfg.Watch, cfg.Servers, d.warnLegacyBackupDirOnce)
 
 	for _, s := range servers {
-		target, err := resolveBackupTarget(s.Name, s.Server, cfg.Local)
+		target, err := resolveBackupTarget(s.Name, s.Server, cfg.Local, cfg.NAS)
 		if err != nil {
 			slog.Error("snapshot discovery: invalid backup target", "server", s.Name, "error", err)
 			continue
 		}
-		if _, ok := stored[s.Name]; ok {
-			continue
+
+		key := s.Watch.Namespace + "/" + s.Name
+		st := stored[s.Name]
+
+		var discoveredHot, discoveredLocal, discoveredNAS string
+
+		if target == "tiered-local" || target == "tiered-nas" {
+			hotDir := filepath.Join(cfg.Local.HotRoot, s.Watch.Namespace, s.Name)
+			if entries, readErr := os.ReadDir(hotDir); readErr == nil {
+				latest := ""
+				for _, e := range entries {
+					if e.IsDir() && isBackupDir(e.Name()) && e.Name() > latest {
+						latest = e.Name()
+					}
+				}
+				if latest != "" {
+					discoveredHot = filepath.Join(hotDir, latest)
+				}
+			}
 		}
 
-		var latestLocal, latestNAS string
-
-		if target == "local" {
+		if target == "local" || target == "tiered-local" {
 			localDir := filepath.Join(cfg.Local.DestRoot, s.Watch.Namespace, s.Name)
 			if entries, readErr := os.ReadDir(localDir); readErr == nil {
 				latest := ""
@@ -159,12 +192,12 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 					}
 				}
 				if latest != "" {
-					latestLocal = filepath.Join(localDir, latest)
+					discoveredLocal = filepath.Join(localDir, latest)
 				}
 			}
 		}
 
-		if target == "nas" {
+		if target == "nas" || target == "tiered-nas" {
 			nasDir := fmt.Sprintf("%s/%s/%s", cfg.NAS.DestRoot, s.Watch.Namespace, s.Name)
 			nasArgs := sshBaseArgs(cfg.NAS)
 			nasArgs = append(nasArgs,
@@ -175,32 +208,60 @@ func (d *Daemon) discoverSnapshots(ctx context.Context, cfg *Config) {
 			if out, err := cmd.Output(); err == nil {
 				nasSnap := strings.TrimSpace(string(out))
 				if nasSnap != "" {
-					latestNAS = nasDir + "/" + filepath.Base(nasSnap)
+					discoveredNAS = nasDir + "/" + filepath.Base(nasSnap)
 				}
 			} else {
 				slog.Debug("cannot list NAS snapshots for discovery", "server", s.Name, "error", err)
 			}
 		}
 
-		if latestLocal != "" || latestNAS != "" {
-			t := snapshotTime(latestLocal)
+		finalHot := st.Hot
+		if discoveredHot != "" && (finalHot == "" || filepath.Base(discoveredHot) > filepath.Base(finalHot)) {
+			finalHot = discoveredHot
+		}
+
+		finalLocal := st.Local
+		if discoveredLocal != "" && (finalLocal == "" || filepath.Base(discoveredLocal) > filepath.Base(finalLocal)) {
+			finalLocal = discoveredLocal
+		}
+
+		finalNAS := st.NAS
+		if discoveredNAS != "" && (finalNAS == "" || filepath.Base(discoveredNAS) > filepath.Base(finalNAS)) {
+			finalNAS = discoveredNAS
+		}
+
+		if finalHot != st.Hot || finalLocal != st.Local || finalNAS != st.NAS || st.Time.IsZero() {
+			t := snapshotTime(finalHot)
 			if t.IsZero() {
-				t = snapshotTime(filepath.Base(latestNAS))
+				t = snapshotTime(finalLocal)
+			}
+			if t.IsZero() {
+				t = snapshotTime(filepath.Base(finalNAS))
 			}
 			if t.IsZero() {
 				t = time.Now()
 			}
-			writeLastSnapshotAt(d.cfgPath, s.Name, latestLocal, latestNAS, t)
-			slog.Info("discovered existing snapshot",
-				"server", s.Name, "local", latestLocal, "nas", latestNAS)
+
+			if finalHot != "" || finalLocal != "" || finalNAS != "" {
+				writeLastSnapshotAt(d.cfgPath, s.Name, finalLocal, finalNAS, finalHot, t)
+				slog.Info("reconciled/discovered existing snapshot",
+					"server", s.Name, "hot", finalHot, "local", finalLocal, "nas", finalNAS)
+			}
 		}
+
+		d.stateMu.Lock()
+		d.lastBackups[key] = &lastBackup{
+			hot:   finalHot,
+			local: finalLocal,
+			nas:   finalNAS,
+		}
+		d.stateMu.Unlock()
 	}
 }
 
 func latestNASSnapshotCommand(nasDir string) string {
-	return fmt.Sprintf("ls -dt %s/[0-9]*-[0-9]* 2>/dev/null | head -1", shellQuote(nasDir))
+	return fmt.Sprintf("ls -dt %s/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9] 2>/dev/null | head -1", shellQuote(nasDir))
 }
-
 func (d *Daemon) provisionServers(cfg *Config, newServers []struct {
 	Name   string
 	Server ServerConfig
@@ -266,15 +327,20 @@ func (d *Daemon) RunContext(ctx context.Context) error {
 	d.discoverSnapshots(ctx, cfg)
 
 	snapshots := readLastSnapshots(d.cfgPath)
+	d.stateMu.Lock()
 	for name, snap := range snapshots {
 		if s, ok := cfg.Servers[name]; ok && !s.Enabled {
 			continue
 		}
 		key := watchKey(cfg, name)
 		if key != "" && d.lastBackups[key] == nil {
-			d.lastBackups[key] = &lastBackup{local: snap.Local, nas: snap.NAS}
+			d.lastBackups[key] = &lastBackup{hot: snap.Hot, local: snap.Local, nas: snap.NAS}
 		}
 	}
+	d.stateMu.Unlock()
+
+	d.offloadWg.Add(1)
+	go d.runOffloadWorker(ctx)
 
 	var recent, due []string
 	for name, snap := range snapshots {
@@ -308,6 +374,7 @@ func (d *Daemon) RunContext(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			slog.Info("daemon shutting down")
+			d.offloadWg.Wait()
 			return ctx.Err()
 		case <-backupTicker.C:
 			d.runBackupCycle(ctx, "", false)
@@ -321,6 +388,156 @@ func (d *Daemon) RunContext(ctx context.Context) error {
 			d.runDiscovery(ctx)
 		}
 	}
+}
+
+func (d *Daemon) runOffloadWorker(ctx context.Context) {
+	defer d.offloadWg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job, ok := <-d.offloadCh:
+			if !ok {
+				return
+			}
+			if err := d.processOffloadJob(ctx, job); err != nil {
+				slog.Warn("offload job failed", "server", job.serverName, "error", err)
+			}
+		}
+	}
+}
+
+func (d *Daemon) processOffloadJob(ctx context.Context, job offloadJob) error {
+	hotDir := filepath.Join(job.cfg.Local.HotRoot, job.namespace, job.serverName)
+	selectedHot := ""
+	if entries, err := os.ReadDir(hotDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && isBackupDir(e.Name()) && e.Name() > selectedHot {
+				selectedHot = e.Name()
+			}
+		}
+	}
+	if selectedHot != "" {
+		selectedHot = filepath.Join(hotDir, selectedHot)
+	}
+
+	d.stateMu.Lock()
+	b := d.lastBackups[job.key]
+	prevCold := ""
+	if b != nil {
+		if job.coldTarget == "nas" {
+			prevCold = b.nas
+		} else {
+			prevCold = b.local
+		}
+	}
+	d.stateMu.Unlock()
+
+	if selectedHot == "" || (prevCold != "" && filepath.Base(selectedHot) <= filepath.Base(prevCold)) {
+		d.jobTracker.RemoveIfSnapshot(job.key, job.timestamp)
+		return nil
+	}
+
+	if delay := job.cfg.Global.TransferDelay.Duration; delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			d.jobTracker.RemoveIfSnapshot(job.key, job.timestamp)
+			return ctx.Err()
+		}
+	}
+
+	selectedTs := filepath.Base(selectedHot)
+	coldState := "Transferring (Local HDD)"
+	if job.coldTarget == "nas" {
+		coldState = "Transferring (NAS)"
+	}
+
+	var maxTotal int64
+	onProgress := func(bytesMoved, totalSize int64) {
+		if totalSize > maxTotal {
+			maxTotal = totalSize
+		}
+		d.jobTracker.UpdateIfSnapshot(job.key, selectedTs, &JobInfo{
+			ServerName: job.serverName,
+			Snapshot:   selectedTs,
+			State:      coldState,
+			BytesMoved: bytesMoved,
+			TotalSize:  maxTotal,
+		})
+		if selectedTs != job.timestamp {
+			d.jobTracker.UpdateIfSnapshot(job.key, job.timestamp, &JobInfo{
+				ServerName: job.serverName,
+				Snapshot:   job.timestamp,
+				State:      coldState,
+				BytesMoved: bytesMoved,
+				TotalSize:  maxTotal,
+			})
+		}
+	}
+
+	d.jobTracker.UpdateIfSnapshot(job.key, job.timestamp, &JobInfo{
+		ServerName: job.serverName,
+		Snapshot:   job.timestamp,
+		State:      coldState,
+	})
+	if selectedTs != job.timestamp {
+		d.jobTracker.UpdateIfSnapshot(job.key, selectedTs, &JobInfo{
+			ServerName: job.serverName,
+			Snapshot:   selectedTs,
+			State:      coldState,
+		})
+	}
+
+	coldPath, err := offloadSnapshot(ctx, job.cfg, job.watch, job.serverName, selectedHot, selectedTs, job.coldTarget, prevCold, onProgress)
+	if err != nil {
+		d.jobTracker.RemoveIfSnapshot(job.key, job.timestamp)
+		d.jobTracker.RemoveIfSnapshot(job.key, selectedTs)
+		return err
+	}
+
+	d.stateMu.Lock()
+	cur := d.lastBackups[job.key]
+	if cur == nil {
+		cur = &lastBackup{}
+		d.lastBackups[job.key] = cur
+	}
+	if job.coldTarget == "nas" {
+		cur.nas = coldPath
+	} else {
+		cur.local = coldPath
+	}
+	if cur.hot == "" || filepath.Base(selectedHot) >= filepath.Base(cur.hot) {
+		cur.hot = selectedHot
+	}
+	savedHot := cur.hot
+	savedLocal := cur.local
+	savedNAS := cur.nas
+	d.stateMu.Unlock()
+
+	writeLastSnapshotAt(d.cfgPath, job.serverName, savedLocal, savedNAS, savedHot, snapshotTime(selectedHot))
+
+	d.jobTracker.RemoveIfSnapshot(job.key, job.timestamp)
+	d.jobTracker.RemoveIfSnapshot(job.key, selectedTs)
+
+	if job.coldTarget == "nas" {
+		if err := pruneNASByDays(ctx, job.cfg.NAS, job.cfg.NAS.DestRoot, job.namespace, job.serverName, job.cfg.Retention.PruneDays); err != nil {
+			slog.Warn("NAS day pruning failed", "server", job.serverName, "error", err)
+		}
+		if err := pruneNASByCount(ctx, job.cfg.NAS, job.cfg.NAS.DestRoot, job.namespace, job.serverName, job.cfg.Retention.PruneCount); err != nil {
+			slog.Warn("NAS count pruning failed", "server", job.serverName, "error", err)
+		}
+	} else {
+		localPath := filepath.Join(job.cfg.Local.DestRoot, job.namespace, job.serverName)
+		pruneLocalByDays(localPath, job.cfg.Retention.PruneDays, time.Now())
+		pruneLocalByCount(localPath, job.cfg.Retention.PruneCount)
+	}
+
+	hotPath := filepath.Join(job.cfg.Local.HotRoot, job.namespace, job.serverName)
+	pruneLocalByDays(hotPath, job.cfg.Retention.HotPruneDays, time.Now())
+	pruneLocalByCount(hotPath, job.cfg.Retention.HotPruneCount)
+
+	return nil
 }
 
 func snapshotTime(path string) time.Time {
@@ -448,10 +665,14 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string, offli
 
 		be := NewBackupEngine(*cfg)
 		key := s.Watch.Namespace + "/" + s.Name
-		prev := d.lastBackups[key]
-		if prev == nil {
-			prev = &lastBackup{}
+
+		d.stateMu.Lock()
+		prevPtr := d.lastBackups[key]
+		var prev lastBackup
+		if prevPtr != nil {
+			prev = *prevPtr
 		}
+		d.stateMu.Unlock()
 
 		ts := time.Now().Format("20060102-1504")
 		d.jobTracker.Add(key, &JobInfo{
@@ -474,35 +695,88 @@ func (d *Daemon) runBackupCycle(parent context.Context, onlyServer string, offli
 			})
 		}
 
-		destPath, usedSSH, err := be.BackupServer(ctx, s.Watch, s.Name, s.Server, prev.local, prev.nas, offline)
+		res, err := be.BackupServer(ctx, s.Watch, s.Name, s.Server, prev.hot, prev.local, prev.nas, offline)
 		if err != nil {
 			slog.Error("backup failed", "server", s.Name, "error", err)
 			d.jobTracker.Remove(key)
 			continue
 		}
 
-		if usedSSH {
-			prev.nas = destPath
-		} else {
-			prev.local = destPath
-		}
-		d.lastBackups[key] = prev
-		if usedSSH {
-			if err := pruneNASByDays(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, cfg.Retention.PruneDays); err != nil {
-				slog.Warn("NAS day pruning failed", "server", s.Name, "error", err)
+		if !res.offloadPending {
+			d.stateMu.Lock()
+			cur := d.lastBackups[key]
+			if cur == nil {
+				cur = &lastBackup{}
+				d.lastBackups[key] = cur
 			}
-			if err := pruneNASByCount(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, cfg.Retention.PruneCount); err != nil {
-				slog.Warn("NAS count pruning failed", "server", s.Name, "error", err)
+			if res.target == "nas" {
+				cur.nas = res.destination
+			} else {
+				cur.local = res.destination
 			}
+			savedLocal := cur.local
+			savedNAS := cur.nas
+			savedHot := cur.hot
+			d.stateMu.Unlock()
+
+			if res.target == "nas" {
+				if err := pruneNASByDays(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, cfg.Retention.PruneDays); err != nil {
+					slog.Warn("NAS day pruning failed", "server", s.Name, "error", err)
+				}
+				if err := pruneNASByCount(ctx, cfg.NAS, cfg.NAS.DestRoot, s.Watch.Namespace, s.Name, cfg.Retention.PruneCount); err != nil {
+					slog.Warn("NAS count pruning failed", "server", s.Name, "error", err)
+				}
+			} else {
+				localPath := filepath.Join(cfg.Local.DestRoot, s.Watch.Namespace, s.Name)
+				pruneLocalByDays(localPath, cfg.Retention.PruneDays, time.Now())
+				pruneLocalByCount(localPath, cfg.Retention.PruneCount)
+			}
+			d.jobTracker.Remove(key)
+			writeLastSnapshot(d.cfgPath, s.Name, savedLocal, savedNAS, savedHot)
 		} else {
-			localPath := filepath.Join(cfg.Local.DestRoot, s.Watch.Namespace, s.Name)
-			pruneLocalByDays(localPath, cfg.Retention.PruneDays, time.Now())
-			pruneLocalByCount(localPath, cfg.Retention.PruneCount)
+			d.stateMu.Lock()
+			cur := d.lastBackups[key]
+			if cur == nil {
+				cur = &lastBackup{}
+				d.lastBackups[key] = cur
+			}
+			cur.hot = res.destination
+			savedLocal := cur.local
+			savedNAS := cur.nas
+			savedHot := cur.hot
+			d.stateMu.Unlock()
+
+			writeLastSnapshot(d.cfgPath, s.Name, savedLocal, savedNAS, savedHot)
+
+			d.jobTracker.Add(key, &JobInfo{
+				ServerName: s.Name,
+				Snapshot:   res.timestamp,
+				State:      "Waiting Offload",
+			})
+
+			coldTarget := "local"
+			if res.target == "tiered-nas" {
+				coldTarget = "nas"
+			}
+
+			job := offloadJob{
+				key:        key,
+				namespace:  s.Watch.Namespace,
+				serverName: s.Name,
+				hotPath:    res.destination,
+				timestamp:  res.timestamp,
+				coldTarget: coldTarget,
+				cfg:        *cfg,
+				watch:      s.Watch,
+			}
+
+			select {
+			case d.offloadCh <- job:
+			default:
+				slog.Warn("offload queue full, dropping offload job", "server", s.Name)
+				d.jobTracker.RemoveIfSnapshot(key, res.timestamp)
+			}
 		}
-		d.jobTracker.Remove(key)
-
-		writeLastSnapshot(d.cfgPath, s.Name, prev.local, prev.nas)
-
 	}
 
 	slog.Info("backup cycle complete", "duration", time.Since(startTime).Round(time.Second))
