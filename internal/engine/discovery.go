@@ -20,6 +20,17 @@ func composeFileCandidates() []string {
 	return []string{"docker-compose.yml", "compose.yml", "docker-compose.yaml", "compose.yaml"}
 }
 
+func isIgnoredServerDir(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	switch strings.ToLower(name) {
+	case "lost+found", "$recycle.bin", "system volume information", "@eadir", "@tmp":
+		return true
+	}
+	return false
+}
+
 func isValidServerName(name string) bool {
 	if len(name) == 0 || len(name) > 64 {
 		return false
@@ -153,7 +164,7 @@ func discoverServersWithWarning(watches []WatchConfig, knownServers map[string]S
 			continue
 		}
 		for _, e := range entries {
-			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			if !e.IsDir() || isIgnoredServerDir(e.Name()) {
 				continue
 			}
 			name := e.Name()

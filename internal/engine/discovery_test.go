@@ -54,6 +54,28 @@ func TestIsValidServerName(t *testing.T) {
 		}
 	}
 }
+func TestIsIgnoredServerDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		ignored bool
+	}{
+		{"lost+found", true},
+		{"LOST+FOUND", true},
+		{"$RECYCLE.BIN", true},
+		{"System Volume Information", true},
+		{"@eaDir", true},
+		{"@tmp", true},
+		{".git", true},
+		{".dot_dir", true},
+		{"valid_server", false},
+		{"invalid server!", false},
+	}
+	for _, tt := range tests {
+		if got := isIgnoredServerDir(tt.name); got != tt.ignored {
+			t.Errorf("isIgnoredServerDir(%q) = %v, want %v", tt.name, got, tt.ignored)
+		}
+	}
+}
 
 func TestWarnLegacyBackupDir(t *testing.T) {
 	tests := []struct {
@@ -242,6 +264,7 @@ func TestDiscoverServersAllBranches(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(watchDir, "disabled_server"), 0755)
 	_ = os.MkdirAll(filepath.Join(watchDir, "invalid server name!"), 0755)
 	_ = os.MkdirAll(filepath.Join(watchDir, ".dot_dir"), 0755)
+	_ = os.MkdirAll(filepath.Join(watchDir, "lost+found"), 0755)
 	_ = os.WriteFile(filepath.Join(watchDir, "regular_file.txt"), []byte("data"), 0600)
 
 	known := map[string]ServerConfig{
@@ -275,7 +298,7 @@ func TestDiscoverServersAllBranches(t *testing.T) {
 		if !names["valid_server"] || !names["new_server"] {
 			t.Errorf("expected valid_server and new_server in results, got %v", names)
 		}
-		if names["disabled_server"] || names["invalid server name!"] || names[".dot_dir"] {
+		if names["disabled_server"] || names["invalid server name!"] || names[".dot_dir"] || names["lost+found"] {
 			t.Errorf("found unexpected server in results: %v", names)
 		}
 
